@@ -7,9 +7,6 @@
 #          Catalog, productivity and parameters still come from files:
 #          because they are stable reference data, not per-tender output.
 #
-# The prod location below is our best guess from the _1_AI_InputProcessing
-# todo (merged file is called tender_lv_positions.csv); adjust it once that
-# module exists and its real output layout is known.
 
 mode: dev
 

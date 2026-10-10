@@ -1,3 +1,7 @@
-tender didn't pass -> attempt of determining why
+tender didn't pass -> attempt of determining why (UI - folder with all internal data for the tender + link to the tender information with competition applications)
 -> success of information gathering -> update estimation of success model (allow fallback/switch)
 -> fail of information gathering -> generate report
+
+---
+
+productivity factors for tasks (for the example are static, for production: Set in UI or use AI + lora) [and maybe + set additional constants manually like travel, survey etc.]

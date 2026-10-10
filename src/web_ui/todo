@@ -1,2 +1,10 @@
 1. upload tender
-2. slider changing calc in html in real time, 2 field inputs, download pdf button 
+2. slider changing calc in html in real time, 2 field inputs, download pdf button; on slider highlighted via different colors possible strategies: AGGRESSIVE (tight margin), TARGET, CONSERVATIVE (high margin)
+3. settings:
+- select loras for ...
+- update loras (internal data dir + links) for ...
+- select base LLM for ...
+
+a. input processing
+b. productivity factors (it is currently set manually by experts - via intuition and/or experience)
+c. succes (to ratio) possibility calculation
