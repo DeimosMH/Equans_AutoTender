@@ -162,7 +162,7 @@ recursive debrief implementation or remote training provider is claimed.
   preserves the supplied PDF hash and avoids inventing extraction supervision.
   Spot checking physical PDF page 78 shows equipment different from the CSV's
   page-78 valve rows; review page alignment before using PDF pages as labels.
-- 13 offline collection/dataset/job tests passed, both golden regressions passed,
+- 15 automated collection/dataset/job/API tests passed, both golden regressions passed,
   Python compilation and JavaScript syntax passed. Isolated localhost API smoke
   test covered settings, async jobs, artifact downloads, tender creation, full
   recalculation and overridden-baseline win curves. Optional trainer preflight
@@ -191,3 +191,12 @@ Use `--exclude-existing` to prepare only uploaded data/new URL sources; use
 The CLI returns nonzero on preparation failure; a blocked dataset remains a
 valid preparation result and carries explicit blockers. Remote upload/training
 and inference remain pending the actual endpoint contract.
+
+## Pre-merge verification
+
+Preparation now fails explicitly on missing or altered raw public snapshots,
+with regression coverage. Moved-corpus snapshots can resolve by digest under
+`data/raw/simap/`. Localhost API smoke coverage is checked into the automated
+test suite. Fifteen tests, both golden regressions, Python compilation, JavaScript
+syntax and diff whitespace checks passed before merging into local main.
+Remote refresh could not run because GitHub HTTPS authentication is unavailable.

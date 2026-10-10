@@ -95,8 +95,10 @@ class JobStore:
                     if not raw_path.is_file():
                         candidate = directory/'collection'/raw_path
                         raw_path = candidate if candidate.is_file() else raw_path
+                    if not raw_path.is_file() and self.corpus_dir:
+                        raw_path = self.corpus_dir/'raw'/'simap'/(str(provenance.get('sha256', ''))+'.json')
                     if not raw_path.is_file():
-                        continue
+                        raise ValueError('Public source snapshot is missing for publication ' + str(record.get('publication_id')))
                     raw = raw_path.read_bytes()
                     if hashlib.sha256(raw).hexdigest() != provenance.get('sha256'):
                         raise ValueError('Public source snapshot hash mismatch')

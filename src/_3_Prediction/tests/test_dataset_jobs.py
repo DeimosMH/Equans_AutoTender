@@ -99,6 +99,28 @@ class ExistingSourcesTests(unittest.TestCase):
             self.assertEqual(result['status'],'blocked')
             self.assertEqual(sum(result['manifest']['counts'].values()),0)
 
+    def test_missing_or_tampered_public_sources_fail_preparation(self):
+        import hashlib
+        for missing in (True, False):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); corpus=root/'corpus'; corpus.mkdir()
+                raw=root/'source.json'
+                expected=b'{"title":"Ventilation"}'
+                if not missing:
+                    raw.write_bytes(b'{"title":"Altered"}')
+                row={'publication_id':'notice1','tender_id':'project1','title':'Ventilation',
+                     'provenance':{'raw_path':str(raw),'sha256':hashlib.sha256(expected).hexdigest()}}
+                (corpus/'market_awards.jsonl').write_text(json.dumps(row)+'\n')
+                store=JobStore(root/'jobs',corpus_dir=corpus)
+                job=store.start('market_extraction','base','',root/'uploads',include_existing=True)
+                for _ in range(100):
+                    result=store.get(job['id'])
+                    if result['status'] not in ('queued','collecting','preparing'): break
+                    time.sleep(.01)
+                self.assertEqual(result['status'],'failed')
+                self.assertIn('missing' if missing else 'hash mismatch',result['error'])
+                self.assertNotIn('manifest',result)
+
     def test_sponsor_seed_is_one_project_matching_supervision(self):
         from prepare_sponsor import sponsor_examples
         examples=sponsor_examples(PRED.parents[1]/'materials')
