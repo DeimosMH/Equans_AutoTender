@@ -341,23 +341,47 @@ function collectPf() {
   pfProd[pfMode] = out;
 }
 let pathExpanded = false;              // source-path disclosure in the topbar
-let SCENARIOS = [                      // bid-strategy pointers (margins from
-  ["Aggressive", 2.5, 69, "mk-agg"],   // params; win % static demo values
-  ["Target", 4.0, 63, "mk-tgt"],       // until _3_Prediction provides them)
-  ["Conservative", 6.5, 49, "mk-con"],
-];
-let winAnchors = SCENARIOS.map(s => [s[1], s[2]]);
-
-function winChance(margin) {           // piecewise-linear between anchors
+let SCENARIOS = [];
+let winAnchors = [];
+let predictionTimer = null, predictionRequest = 0, predictionKey = null;
+function winChance(margin) {
   const a = winAnchors;
-  if (margin <= a[0][0]) return a[0][1];
-  if (margin >= a[a.length - 1][0]) return a[a.length - 1][1];
+  if (!a.length) return "unavailable";
+  if (margin <= a[0][0]) return Math.round(a[0][1]);
+  if (margin >= a[a.length - 1][0]) return Math.round(a[a.length - 1][1]);
   for (let i = 0; i < a.length - 1; i++) {
     const [x1, y1] = a[i], [x2, y2] = a[i + 1];
     if (margin >= x1 && margin <= x2)
       return Math.round(y1 + (y2 - y1) * (margin - x1) / (x2 - x1));
   }
-  return a[0][1];
+  return "unavailable";
+}
+function usePrediction(data) {
+  winAnchors = (data?.curve || []).map(p => [p.margin_pct, p.p_win.mid * 100]);
+  if ($("winOut")) $("winOut").textContent = winChance(parseFloat($("margin").value));
+  if ($("predictionNote")) $("predictionNote").textContent = data?.model?.warning || "Prediction unavailable";
+  if ($("scenarioResults")) $("scenarioResults").innerHTML = (data?.scenarios || []).map(p =>
+    `<div><b>${esc(p.scenario)}</b>: CHF ${chf(p.bid_price_chf)} · ${p.margin_pct}% margin · ~${Math.round(p.p_win.mid * 100)}% estimate (${Math.round(p.p_win.min * 100)}–${Math.round(p.p_win.max * 100)}% sensitivity) · expected contribution CHF ${chf(p.expected_contribution_chf)}</div>`).join("");
+}
+function refreshPrediction(baseline) {
+  const key = `${current}:${baseline}`;
+  if (key === predictionKey) return;
+  predictionKey = key;
+  clearTimeout(predictionTimer);
+  const request = ++predictionRequest, tender = current;
+  winAnchors = [];
+  if ($("winOut")) $("winOut").textContent = "pending";
+  if ($("scenarioResults")) $("scenarioResults").textContent = "Updating bid scenarios…";
+  predictionTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/tenders/${tender}/wincurve?baseline=${encodeURIComponent(baseline)}`);
+      if (!res.ok) throw new Error("prediction unavailable");
+      const data = await res.json();
+      if (request === predictionRequest && current === tender) usePrediction(data);
+    } catch (e) {
+      if (request === predictionRequest && current === tender) { predictionKey = null; usePrediction(null); }
+    }
+  }, 180);
 }
 let uiSettings = null;
 
@@ -477,22 +501,21 @@ function renderMain() {
 
   const p = params;
   const so = (p.stretch_bid_optimization || {}).scenario_margins_pct || {};
-  SCENARIOS = [
-    ["Aggressive", so.Aggressive ?? 2.5, 69, "mk-agg"],
-    ["Target", so.Target ?? 4.0, 63, "mk-tgt"],
-    ["Conservative", so.Conservative ?? 6.5, 49, "mk-con"],
-  ];
-  winAnchors = SCENARIOS.map(s => [s[1], s[2]]);
+  SCENARIOS = Object.entries(so).map(([name, m], i) => [name, m, null, ["mk-agg", "mk-tgt", "mk-con"][i] || "mk-tgt"]);
+  winAnchors = [];
+  predictionKey = null;
   const maxMargin = 15;
   $("content").innerHTML = `
     <section class="card">
       <h2>Scenario</h2>
+      <div class="hint" id="predictionNote">Illustrative heuristic; no trained model.</div>
+      <div class="hint" id="scenarioResults"></div>
       <div class="scenario">
         <div class="sc-margin">
           <div class="sc-head">
             <span class="sc-label">Target margin</span>
             <span class="sc-right">
-              <span class="sc-win" title="estimated win probability - demo values until _3_Prediction connects">&#8776; <output id="winOut">-</output>% win chance</span>
+              <span class="sc-win" title="Parameter-based heuristic estimate; not calibrated">&#8776; <output id="winOut">-</output>% win chance</span>
               <span class="sc-value"><output id="marginOut">${p.commercial.target_margin_pct}</output><small>%</small></span>
             </span>
           </div>
@@ -501,13 +524,13 @@ function renderMain() {
             <span class="sc-end">0%</span>
             ${SCENARIOS.map(([name, m, w, cls]) =>
               `<i class="sc-dot ${cls}" style="left:${(m / maxMargin * 100).toFixed(1)}%"
-                 title="${name}: ${m}% margin, ~${w}% win chance"></i>`).join("")}
+                 title="${name}: ${m}% margin"></i>`).join("")}
             <span class="sc-end" style="left:auto;right:0">${maxMargin}%</span>
           </div>
           <div class="sc-legend">
             ${SCENARIOS.map(([name, m, w, cls]) =>
               `<button class="sc-chip ${cls}" data-margin="${m}" title="set margin to ${m}% (${name})">
-                 <i></i><b>${name}</b><span>${m}% &middot; ~${w}% win</span></button>`).join("")}
+                 <i></i><b>${name}</b><span>${m}% margin</span></button>`).join("")}
           </div>
         </div>
         <div class="sc-divider"></div>
@@ -639,6 +662,7 @@ function recompute() {
   $("cDir").textContent = chf(direct);
   $("cBase").textContent = chf(baseline);
   $("cPrice").textContent = chf(price);
+  refreshPrediction(baseline);
 }
 
 function updateSaveState() {
@@ -654,6 +678,7 @@ const TASKS = [
   { key: "input_processing", label: "Input processing" },
   { key: "productivity_factors", label: "Productivity factors" },
   { key: "win_ratio", label: "Win-ratio prediction" },
+  { key: "market_extraction", label: "Public notice extraction" },
 ];
 
 async function loadSettings() {
@@ -685,7 +710,7 @@ function renderSettings() {
       <div id="verRows"></div>
     </section>
     <section class="card">
-      <h2>Update LoRAs</h2>
+      <h2>Prepare LoRA training data</h2><p class="hint">Public tenders provide market extraction data. Win prediction requires your own submitted bids with verified won/lost outcomes. Preparing data does not train or select an adapter. Upload task JSONL; training awaits a provider with explicit LoRA support. <a href="/api/settings/dataset-format" target="_blank">JSONL schemas and examples</a>.</p>
       <div id="updRows"></div>
     </section>
     <section class="card">
@@ -733,9 +758,10 @@ function renderSettings() {
     <div class="updrow" data-task="${t.key}">
       <b>${t.label}</b>
       <button class="up-data">Upload data</button>
-      <input type="file" class="up-file" hidden>
+      <input type="file" class="up-file" accept=".jsonl" hidden>
       <input type="text" class="up-links" placeholder="provide links for tenders or tender data">
-      <button class="up-go">Update</button>
+      <label><input type="checkbox" class="up-existing" checked> Use collected data and sponsor examples</label>
+      <button class="up-go">Prepare dataset</button>
       <span class="rowmsg"></span>
     </div>`).join("");
   document.querySelectorAll("#updRows .updrow").forEach(row => {
@@ -743,29 +769,61 @@ function renderSettings() {
     row.querySelector(".up-links").value = uiSettings.tasks[task].links || "";
     const file = row.querySelector(".up-file");
     row.querySelector(".up-data").addEventListener("click", () => file.click());
+    const showJob = job => {
+      const msg = row.querySelector(".rowmsg");
+      msg.textContent = `${job.status}${job.error ? ": " + job.error : ""}`;
+      if (job.manifest?.blockers?.length) msg.textContent += ": " + job.manifest.blockers.join(" ");
+      if (job.awaiting) msg.textContent += " " + job.awaiting;
+      if (job.market_extraction_manifest) msg.textContent += ` Public market extraction: ${job.market_extraction_manifest.status}.`;
+      if (job.collection_errors?.length) msg.textContent += " Collection warnings: " + JSON.stringify(job.collection_errors);
+      for (const name of job.artifacts || []) {
+        const a = document.createElement("a"); a.textContent = name; a.style.marginLeft = "8px";
+        a.href = `/api/settings/jobs/${encodeURIComponent(job.id)}/artifacts/${encodeURIComponent(name)}`;
+        a.download = name; msg.appendChild(a);
+      }
+    };
+    const pollJob = async id => {
+      try {
+        const res = await fetch(`/api/settings/jobs/${encodeURIComponent(id)}`);
+        const job = await res.json();
+        if (!res.ok) throw new Error(job.error || "Cannot load job");
+        if (!row.isConnected || view !== "settings") return;
+        showJob(job);
+        if (["queued", "collecting", "preparing"].includes(job.status)) setTimeout(() => pollJob(id), 1500);
+        else row.querySelector(".up-go").disabled = false;
+      } catch (error) {
+        row.querySelector(".rowmsg").textContent = error.message;
+        row.querySelector(".up-go").disabled = false;
+      }
+    };
+    const previous = (uiSettings.preparation_jobs || []).find(j => j.task === task);
+    if (previous) { showJob(previous); if (["queued", "collecting", "preparing"].includes(previous.status)) pollJob(previous.id); }
     file.addEventListener("change", async () => {
       if (!file.files[0]) return;
       const msg = row.querySelector(".rowmsg");
-      msg.textContent = "uploading...";
-      const res = await fetch(
-        `/api/settings/upload-data?task=${task}&name=${encodeURIComponent(file.files[0].name)}`,
-        { method: "POST", body: file.files[0] });
-      const j = await res.json();
-      msg.textContent = j.ok ? "data stored" : j.error;
+      msg.textContent = "validating upload...";
+      try {
+        const res = await fetch(`/api/settings/upload-data?task=${task}&name=${encodeURIComponent(file.files[0].name)}`,
+          { method: "POST", body: file.files[0] });
+        const j = await res.json();
+        msg.textContent = j.ok ? `${j.records} validated records stored` : j.error;
+      } catch (error) { msg.textContent = error.message; }
       file.value = "";
     });
     row.querySelector(".up-go").addEventListener("click", async () => {
-      const msg = row.querySelector(".rowmsg");
-      msg.textContent = "updating...";
-      const res = await fetch("/api/settings/update", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, links: row.querySelector(".up-links").value }),
-      });
-      const j = await res.json();
-      if (!j.ok) { msg.textContent = j.error; return; }
-      uiSettings = j.settings;
-      renderSettings();
-      $("settingsMsg").textContent = `updated - version ${j.version}`;
+      const msg = row.querySelector(".rowmsg"), button = row.querySelector(".up-go");
+      button.disabled = true; msg.textContent = "starting preparation...";
+      try {
+        const res = await fetch("/api/settings/update", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task, links: row.querySelector(".up-links").value,
+            include_existing: row.querySelector(".up-existing").checked }),
+        });
+        const j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j.error || "Preparation failed");
+        uiSettings = j.settings;
+        showJob(j.job); pollJob(j.job.id);
+      } catch (error) { msg.textContent = error.message; button.disabled = false; }
     });
   });
 
@@ -840,7 +898,7 @@ function buildVersionSelects() {
   TASKS.forEach(t => {
     const task = uiSettings.tasks[t.key];
     const options = [{ v: "", t: "none" },
-      ...task.versions.filter(v => v.base === uiSettings.base_model)
+      ...task.versions.filter(v => v.base === uiSettings.base_model && v.status === "evaluated")
         .map(v => ({ v: v.version, t: v.version }))];
     const selected = options.some(o => o.v === task.selected) ? task.selected : "";
     $("ver-" + t.key).innerHTML = _sel("s-ver", options, selected);
