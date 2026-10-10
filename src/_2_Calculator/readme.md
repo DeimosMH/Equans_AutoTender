@@ -55,7 +55,9 @@ that for uploads. The scripts resolve paths relative to their own location
 `common.py` holds the shared loaders and the rounding helper; nothing else is shared.
 The output location defaults to `output/calc.json` and can be redirected with the
 `AUTOTENDER_CALC_OUT` env var - the web UI uses that to give each tender its own
-`calc.json`.
+`calc.json`. Likewise `AUTOTENDER_FACTORS` (JSON) overrides the productivity
+factors of `project_parameters.json` - the web UI passes its manual or AI
+factor settings through it.
 
 ## How the calculation works
 

@@ -92,6 +92,13 @@ removes the directory.
   `/api/settings/upload-data`).
 - **Advanced** - the base model (changing it changes which versions are
   available) and the model paths (models / loras / cache dirs).
+- **Productivity factors** - **Manual** (your values, defaults from
+  `project_parameters.json`) or **AI** (suggestions of the assigned
+  productivity LoRA - demo values until the backend connects); either way
+  every parameter stays editable. The active mode's values flow into every
+  calculation via the `AUTOTENDER_FACTORS` env override on `_2_Calculator`
+  step2 (and the server-side edit recompute); the scenario card shows the
+  active mode.
 - **Appearance** - a dark mode toggle; applies to the whole app instantly and
   persists per browser (localStorage).
 

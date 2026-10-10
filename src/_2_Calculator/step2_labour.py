@@ -8,7 +8,14 @@ Labour cost is computed from the UNROUNDED hours (the golden example stores
 4.35 h but 417.30 CHF = 4.346875 h x 96); only the stored hours value is
 rounded for display. Adds adjusted_install_hours, labour_role,
 hourly_rate_chf and labour_cost_chf to each position in output/calc.json.
+
+The AUTOTENDER_FACTORS env var (JSON, set by the web UI from its settings -
+manual values or AI suggestions) overrides the productivity factors of
+project_parameters.json.
 """
+import json
+import os
+
 from common import combined_factor, D, load_calc, load_params, load_productivity, r2, save_calc
 
 
@@ -16,10 +23,12 @@ def main():
     params = load_params()
     rules = load_productivity()
     calc = load_calc()
+    override = json.loads(os.environ.get("AUTOTENDER_FACTORS") or "{}")
+    factors = {**params["productivity_factors"], **override}
 
     for pos in calc["position_results"]:
         rule = rules[pos["install_code"]]
-        factor = combined_factor(rule["factor_keys"], params["productivity_factors"])
+        factor = combined_factor(rule["factor_keys"], factors)
         hours = D(pos["quantity"]) * D(rule["base_hours_per_unit"]) * factor
         rate = D(rule["default_hourly_rate_chf"])
         pos["adjusted_install_hours"] = r2(hours)

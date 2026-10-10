@@ -95,6 +95,11 @@ def list_tenders() -> list:
 # app settings - LoRA model selection per task (backend connects later)
 TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio")
 BASE_MODELS = ["GLM-4.6", "GLM-4.5-Air", "Llama-3.3-70B", "Qwen3-32B"]
+AI_DEMO_FACTORS = {  # demo suggestions until the productivity LoRA connects
+    "site_efficiency": 0.92, "school_logistics": 1.05,
+    "mounting_height_school": 1.08, "mounting_height_sports_hall": 1.20,
+    "timber_interface": 1.05,
+}
 
 DEFAULT_SETTINGS = {
     "base_model": "GLM-4.6",
@@ -148,12 +153,40 @@ def _norm_settings(data) -> dict:
             t["selected"] = next((v["version"] for v in t["versions"]
                                   if v["base"] == base), None)
 
+    base_factors = calc_common.load_params()["productivity_factors"]
+
+    def _factors(d, fallback):
+        out = {}
+        for k, dv in fallback.items():
+            try:
+                v = float((d or {}).get(k, dv))
+            except (TypeError, ValueError):
+                v = float(dv)
+            out[k] = min(max(round(v, 3), 0.1), 3.0)
+        return out
+
+    prod_in = data.get("productivity") or {}
+    productivity = {
+        "mode": prod_in.get("mode") if prod_in.get("mode") in ("manual", "ai") else "manual",
+        "manual": _factors(prod_in.get("manual"), base_factors),
+        "ai": _factors(prod_in.get("ai"), AI_DEMO_FACTORS),
+    }
+
     adv_in = data.get("advanced") or {}
     adv = dict(DEFAULT_SETTINGS["advanced"])
     for k in adv:
         if k in adv_in:
             adv[k] = str(adv_in[k])[:200]
-    return {"base_model": base, "tasks": tasks, "advanced": adv}
+    return {"base_model": base, "tasks": tasks, "advanced": adv,
+            "productivity": productivity}
+
+
+def effective_factors() -> dict:
+    """Factors of the active mode (manual or ai), defaulted per key."""
+    prod = load_ui_settings().get("productivity") or {}
+    vals = prod.get(prod.get("mode", "manual")) or {}
+    base = calc_common.load_params()["productivity_factors"]
+    return {k: vals.get(k, base[k]) for k in base}
 
 
 def load_ui_settings() -> dict:
@@ -181,8 +214,11 @@ def save_ui_settings(data: dict) -> dict:
     return settings
 
 
-def run_steps(calc_out: Path, scripts: list, positions_csv: Path | None = None) -> str:
+def run_steps(calc_out: Path, scripts: list, positions_csv: Path | None = None,
+              factors: dict | None = None) -> str:
     env = dict(os.environ, AUTOTENDER_CALC_OUT=str(calc_out))
+    if factors:
+        env["AUTOTENDER_FACTORS"] = json.dumps(factors)
     for script, extra in scripts:
         r = subprocess.run([sys.executable, script, *extra],
                            cwd=CALC_DIR, capture_output=True, text=True, env=env)
@@ -192,13 +228,14 @@ def run_steps(calc_out: Path, scripts: list, positions_csv: Path | None = None) 
 
 
 def calc_tender(tid: str) -> str:
-    """Full pipeline (step1-4) on the tender's stored positions csv."""
+    """Full pipeline (step1-4) on the tender's stored positions csv,
+    using the productivity factors of the active settings mode."""
     return run_steps(calc_path(tid), [
         ("step1_material.py", [str(positions_path(tid))]),
         ("step2_labour.py", []),
         ("step3_combine.py", []),
         ("step4_project.py", []),
-    ])
+    ], factors=effective_factors())
 
 
 def apply_edits(tid: str, edits: dict) -> dict:
@@ -210,7 +247,7 @@ def apply_edits(tid: str, edits: dict) -> dict:
     calc = json.loads(calc_path(tid).read_text())
     rules = calc_common.load_productivity()
     params = calc_common.load_params()
-    factors = params["productivity_factors"]
+    factors = effective_factors()
     waste = D(params["allowances"]["material_waste_pct"]) / 100
     by_lv = {p["lv_id"]: p for p in calc["position_results"]}
     touched = 0
@@ -494,7 +531,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
                margin: float, descriptions: dict | None = None,
                hide_params: bool = False, hide_notes: bool = False) -> bytes:
     """Client-facing offer summary: branded cover with KPI cards, the big
-    indicative price, a "how and why" methodology, and the position table."""
+    selling price banner, the methodology, and the position table."""
     d = _offer_data(calc, params, waste, overhead, margin, descriptions,
                     hide_params, hide_notes)
     (rows, material, labour, direct, services, allowances, baseline, price,
@@ -511,14 +548,12 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
     band_h = 132
     pg.rect(0, PAGE_H - band_h, PAGE_W, band_h, ORANGE)
     pg.rect(0, PAGE_H - band_h - 5, PAGE_W, 5, INK)
-    pg.text(MARGIN, PAGE_H - 46, "INDICATIVE TENDER CALCULATION", "F2", 9.5, CREAM)
+    pg.text(MARGIN, PAGE_H - 46, "TENDER CALCULATION", "F2", 9.5, CREAM)
     title = calc["project"]["name"]
     tsize = 20  # shrink long project names until the full title fits the band
     while tsize > 12 and _tw(title, "F2", tsize) > 360:
         tsize -= 1
     pg.text(MARGIN, PAGE_H - 78, title, "F2", tsize, WHITE, max_w=360)
-    pg.text(MARGIN, PAGE_H - 100, f"{n} LV positions - currency CHF excl. VAT - source: {src}",
-            "F3", 7.5, CREAM, max_w=360)
     pg.text(PAGE_W - MARGIN, PAGE_H - 46, time.strftime("%d %b %Y"), "F2", 10, WHITE, align="right")
     if not d["hp"]:
         pg.text(PAGE_W - MARGIN, PAGE_H - 62, "SCENARIO", "F3", 6.5, CREAM, align="right")
@@ -547,7 +582,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
 
     bt = y0 - ch - 14
     pg.rect(MARGIN, bt - 56, PAGE_W - 2 * MARGIN, 56, INK)
-    pg.text(MARGIN + 12, bt - 21, "INDICATIVE SELLING PRICE", "F2", 8.5, CREAM)
+    pg.text(MARGIN + 12, bt - 21, "SELLING PRICE", "F2", 8.5, CREAM)
     pg.text(MARGIN + 12, bt - 44,
             "currency CHF excl. VAT" if d["hp"]
             else f"at {num(margin)}% target margin - not a binding offer",
@@ -568,7 +603,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
         my = ry - 17 - 26
     else:
         my = ry - 26
-    pg.text(MARGIN, my, "How this price is built - and why", "F2", 12.5, INK)
+    pg.text(MARGIN, my, "How this price is built", "F2", 12.5, INK)
     pg.rect(MARGIN, my - 6, 34, 2, ORANGE)
     sy = my - 24
     for i, (title, body) in enumerate(steps, 1):
@@ -580,16 +615,6 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
             pg.text(MARGIN + 17, yy, line, "F1", 7.8, MUTED)
             yy -= 9.6
         sy = yy - 8
-
-    pg.text(MARGIN, sy - 4, "Why indicative?", "F2", 8, INK)
-    note = ("This calculation makes the cost build-up transparent and reviewable. "
-            "Supplier-package positions still carry budget rates until quotations arrive; "
-            "the final offer replaces them and re-validates the totals. "
-            "Generated by Equans AutoTender.")
-    yy = sy - 15
-    for line in _wrap(note, "F3", 7.5, PAGE_W - 2 * MARGIN):
-        pg.text(MARGIN, yy, line, "F3", 7.5, MUTED)
-        yy -= 9.2
 
     # ---------------------------------------------------------- position table
     COLS = [("LV", 56, "left"), ("DESCRIPTION", 100, "left"), ("QTY", 330, "right"),
@@ -626,7 +651,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
         tp.rect(48, y - 1.2, 4, 4, AMBER if p["review_required"] else GREEN)
         tp.text(56, y, p["lv_id"], "F1", 6.8, INK)
         tp.text(100, y, desc,
-                "F1", 7, INK, max_w=214)
+                "F1", 7, INK, max_w=190)  # ends before the right-aligned QTY text
         tp.text(330, y, f"{num(p['quantity'])} {p['unit']}", "F1", 7, INK, align="right")
         tp.text(386, y, chf(p["net_unit_cost_chf"]), "F1", 7, INK, align="right")
         tp.text(442, y, chf(mat), "F1", 7, INK, align="right")
@@ -723,20 +748,18 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Equans AutoTender - {e(calc["project"]["name"])}</title><style>{css}</style></head><body>
 <div class="band">
-  <div><div class="k">INDICATIVE TENDER CALCULATION</div>
+  <div><div class="k">TENDER CALCULATION</div>
     <h1>{e(calc["project"]["name"])}</h1>
-    <div style="font-size:12.5px;color:#ffd9c7">{n} LV positions - currency CHF excl. VAT -
-      source: {e(d["src"])}</div></div>
   <div class="meta"><b>{time.strftime("%d %b %Y")}</b>{"" if d["hp"] else f"<br>SCENARIO<br>"
     f"waste {num(waste)}% / overhead {num(overhead)}%<br>margin {num(margin)}%"}</div>
 </div>
 <div class="wrap">
   <div class="cards">{"".join(f'<div class="card"><div class="k">{k}</div><div class="v">{v}</div><div class="k">{s}</div></div>' for k, v, s in cards)}</div>
-  <div class="price"><div><div class="k">INDICATIVE SELLING PRICE</div>
+  <div class="price"><div><div class="k">SELLING PRICE</div>
     <div style="font-size:12px;color:#b9bec6">{"currency CHF excl. VAT" if d["hp"] else f"at {num(margin)}% target margin"}</div></div>
     <div class="v">CHF {chf(d["price"])}</div></div>
   {chip}
-  <h2>How this price is built - and why</h2>{steps}
+  <h2>How this price is built</h2>{steps}
   <h2>Positions ({n})</h2>
   <table><thead><tr><th>LV</th><th style="text-align:left">DESCRIPTION</th><th>QTY</th>
     <th>NET/UNIT</th><th>MATERIAL</th><th>HOURS</th><th>LABOUR</th><th>DIRECT</th>
@@ -777,14 +800,13 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
                 f"{para(text, bold=bold, size=15, align=align, after=0, color=color)}</w:tc>")
 
     body = [
-        para("INDICATIVE TENDER CALCULATION", bold=True, size=17, color="D9480F", after=40),
+        para("TENDER CALCULATION", bold=True, size=17, color="D9480F", after=40),
         para(calc["project"]["name"], bold=True, size=40, after=60),
-        para(f"{n} LV positions - currency CHF excl. VAT - source: {d['src']} - "
-             f"{time.strftime('%d %b %Y')}" + ("" if d["hp"] else
+        para(time.strftime("%d %b %Y") + ("" if d["hp"] else
              f"   |   scenario: waste {num(waste)}% / "
              f"overhead {num(overhead)}% / margin {num(margin)}%"),
              size=15, color="6B7280", after=200),
-        para("INDICATIVE SELLING PRICE", bold=True, size=17, color="D9480F", after=40),
+        para("SELLING PRICE", bold=True, size=17, color="D9480F", after=40),
         para(f"CHF {chf(d['price'])}", bold=True, size=52, after=40),
         para("currency CHF excl. VAT" if d["hp"] else f"at {num(margin)}% target margin",
              size=15, color="6B7280", after=200),
@@ -798,7 +820,7 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
         para(chf(d["baseline"]) + ("  (+ services and allowances)" if d["hp"] else
              f"  (+ services, allowances, {num(overhead)}% overhead)"),
              size=19, after=240),
-        para("How this price is built - and why", bold=True, size=26, after=120),
+        para("How this price is built", bold=True, size=26, after=120),
     ]
     for i, (title, text) in enumerate(d["steps"], 1):
         body.append(para(f"{i}.  {title}", bold=True, size=18, after=20))

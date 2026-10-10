@@ -169,6 +169,15 @@
             padding:12px 0; border-bottom:1px solid var(--line); }
   .setrow:last-child { border-bottom:0; }
   .setrow select { max-width:240px; }
+  .pf-head { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:4px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg-btn { border:0; border-radius:0; padding:6px 16px; background:var(--panel);
+             color:var(--muted); cursor:pointer; font:inherit; }
+  .seg-btn.on { background:var(--accent); color:#fff; }
+  .pf-field { display:flex; align-items:center; gap:12px; }
+  .pf-field input { width:82px; padding:6px 8px; border:1px solid var(--line);
+                    border-radius:8px; background:var(--input-bg); color:var(--ink); }
+  .pf-eff { font-size:12px; color:var(--muted); min-width:96px; }
   .updrow { display:grid; grid-template-columns:200px auto 1fr auto minmax(100px, auto);
             gap:10px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
   .updrow:last-child { border-bottom:0; }
@@ -319,6 +328,18 @@ let meta = null, calc = null, params = null;
 let dirtyFields = new Map();           // lv_id -> Set of edited field names
 let sortState = { key: null, dir: 1 }; // column key + 1 asc / -1 desc
 let view = "tender";                   // "tender" | "settings"
+let pfMode = "manual";                // productivity factors mode
+let pfProd = null;                    // productivity settings being edited
+
+function collectPf() {
+  if (!pfProd) return;
+  const out = { ...(pfProd[pfMode] || {}) };
+  document.querySelectorAll(".pf-val").forEach(inp => {
+    const v = parseFloat(inp.value);
+    if (!isNaN(v)) out[inp.dataset.k] = v;
+  });
+  pfProd[pfMode] = out;
+}
 let pathExpanded = false;              // source-path disclosure in the topbar
 let SCENARIOS = [                      // bid-strategy pointers (margins from
   ["Aggressive", 2.5, 69, "mk-agg"],   // params; win % static demo values
@@ -496,6 +517,11 @@ function renderMain() {
           <label><span>Material waste</span>
             <div class="sc-field"><input type="number" id="waste" step="0.5" min="0" max="20" value="${p.allowances.material_waste_pct}"><i>%</i></div></label>
         </div>
+        <div class="hint" style="flex-basis:100%">
+          productivity factors:
+          <a id="pfModeLink" style="color:var(--accent);cursor:pointer"
+             title="change in settings">${esc(localStorage.getItem("autotender_pf_mode") || "manual")}</a>
+        </div>
       </div>
     </section>
     <section class="stats">
@@ -562,6 +588,8 @@ function renderMain() {
       s.value = chip.dataset.margin;
       s.dispatchEvent(new Event("input"));
     }));
+  const pfLink = $("pfModeLink");
+  if (pfLink) pfLink.addEventListener("click", () => { view = "settings"; renderMain(); });
   $("posTable").querySelectorAll("th[data-key]").forEach(th =>
     th.addEventListener("click", () => {
       if (sortState.key === th.dataset.key) sortState.dir *= -1;
@@ -661,6 +689,17 @@ function renderSettings() {
       <div id="updRows"></div>
     </section>
     <section class="card">
+      <h2>Productivity factors</h2>
+      <div class="pf-head">
+        <div class="seg" id="pfSeg">
+          <button class="seg-btn" data-mode="manual">Manual</button>
+          <button class="seg-btn" data-mode="ai">AI</button>
+        </div>
+        <span class="hint" id="pfNote"></span>
+      </div>
+      <div id="pfRows"></div>
+    </section>
+    <section class="card">
       <h2>Appearance</h2>
       <div class="setrow">
         <b>Dark mode</b>
@@ -733,6 +772,56 @@ function renderSettings() {
   $("darkToggle").checked = document.body.classList.contains("dark");
   $("darkToggle").addEventListener("change", e => setDarkMode(e.target.checked));
 
+  // productivity factors: manual values or AI suggestions, both editable
+  const prod = uiSettings.productivity || { mode: "manual", manual: {}, ai: {} };
+  pfMode = prod.mode;
+  const FLD = { site_efficiency: "site efficiency", school_logistics: "school logistics",
+                mounting_height_school: "mounting height - school",
+                mounting_height_sports_hall: "mounting height - sports hall",
+                timber_interface: "timber interface" };
+  const effTxt = (k, v) => {
+    const pct = (k === "site_efficiency" ? 1 / v - 1 : v - 1) * 100;
+    return `= ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% hours`;
+  };
+  $("pfRows").innerHTML = Object.keys(FLD).map(k => `
+    <div class="setrow">
+      <b>${FLD[k]}</b>
+      <div class="pf-field">
+        <input type="number" class="pf-val" data-k="${k}" step="0.01" min="0.1" max="3">
+        <span class="pf-eff" id="eff-${k}"></span>
+      </div>
+    </div>`).join("");
+  pfProd = prod;
+  const fillPf = () => {
+    const vals = prod[pfMode] || {};
+    document.querySelectorAll(".pf-val").forEach(inp => {
+      const k = inp.dataset.k;
+      inp.value = vals[k] ?? "";
+      const v = parseFloat(inp.value);
+      const e = $("eff-" + k);
+      if (e && !isNaN(v)) e.textContent = effTxt(k, v);
+    });
+    document.querySelectorAll(".seg-btn").forEach(b =>
+      b.classList.toggle("on", b.dataset.mode === pfMode));
+    $("pfNote").textContent = pfMode === "ai"
+      ? "suggested by the assigned productivity LoRA (demo values until the backend connects) - change what you want"
+      : "your values apply to every new calculation";
+  };
+  document.querySelectorAll(".pf-val").forEach(inp =>
+    inp.addEventListener("input", () => {
+      const v = parseFloat(inp.value);
+      const e = $("eff-" + inp.dataset.k);
+      if (e && !isNaN(v)) e.textContent = effTxt(inp.dataset.k, v);
+    }));
+  document.querySelectorAll(".seg-btn").forEach(b =>
+    b.addEventListener("click", () => {
+      if (b.dataset.mode === pfMode) return;
+      collectPf();   // keep edits of the mode we are leaving
+      pfMode = b.dataset.mode;
+      fillPf();
+    }));
+  fillPf();
+
   const adv = uiSettings.advanced;
   $("advBase").innerHTML = _sel("s-base",
     uiSettings.base_models.map(b => ({ v: b, t: b })), uiSettings.base_model);
@@ -764,11 +853,13 @@ async function saveSettings() {
     selected: document.querySelector(`#ver-${t.key} .s-ver`)?.value || null,
     links: document.querySelector(`#updRows .updrow[data-task="${t.key}"] .up-links`)?.value || "",
   });
+  collectPf();
   const res = await fetch("/api/settings", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       base_model: document.querySelector("#advBase .s-base")?.value || uiSettings.base_model,
       tasks,
+      productivity: { mode: pfMode, manual: pfProd?.manual || {}, ai: pfProd?.ai || {} },
       advanced: {
         models_dir: $("adv-models").value.trim(),
         loras_dir: $("adv-loras").value.trim(),
@@ -781,7 +872,10 @@ async function saveSettings() {
   msg.classList.remove("ok", "err");
   msg.classList.add(j.ok ? "ok" : "err");
   msg.textContent = j.ok ? "saved" : j.error;
-  if (j.ok) uiSettings = j.settings;
+  if (j.ok) {
+    uiSettings = j.settings;
+    localStorage.setItem("autotender_pf_mode", pfMode);
+  }
 }
 
 $("settingsBtn").addEventListener("click", () => { view = "settings"; renderMain(); });
