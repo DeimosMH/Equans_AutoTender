@@ -392,9 +392,12 @@ def build_pdf(pages: list) -> bytes:
 
 
 def _offer_data(calc: dict, params: dict, waste: float, overhead: float,
-                margin: float, descriptions: dict | None = None) -> dict:
+                margin: float, descriptions: dict | None = None,
+                hide_params: bool = False, hide_notes: bool = False) -> dict:
     """Shared numbers + texts for all export formats (pdf/html/docx).
-    Same recompute the browser does for the slider/inputs."""
+    Same recompute the browser does for the slider/inputs. With hide_params,
+    the internal cost knobs (waste/overhead/margin and allowance percentages)
+    are left out of the client-facing texts."""
     descriptions = descriptions or {}
     r2f = lambda x: round(x + 1e-9, 2)
     positions = calc["position_results"]
@@ -434,44 +437,66 @@ def _offer_data(calc: dict, params: dict, waste: float, overhead: float,
     src = calc.get("input", {}).get("positions_file", "").rsplit("/", 1)[-1] or "n/a"
     eff_pct = (1 / pf["site_efficiency"] - 1) * 100
     fp = lambda v: f"{(v - 1) * 100:+.0f}%"
-    steps = [
-        ("Every position matched and traceable",
-         "Each LV position of the tender is matched to a priced catalog product or a "
-         "supplier package. The tender source page is kept with every line, so any "
-         "number in this document can be traced back to the original request."),
-        ("Materials at net rates plus a waste allowance",
-         f"Net unit costs reflect current supplier conditions; a {num(waste)}% "
-         f"material-waste allowance covers cutting and handling losses. Supplier-package "
-         f"items run at budget rates and are flagged for firm quotations."),
-        ("Labour from measured productivity, adjusted for this building",
-         f"Installation hours follow productivity rules (hours per unit per component). "
-         f"For a school in operation we apply school logistics {fp(pf['school_logistics'])}, "
-         f"mounting height {fp(pf['mounting_height_school'])}, timber interfaces "
-         f"{fp(pf['timber_interface'])} and site efficiency {eff_pct:+.1f}%. "
-         f"Hourly rates: {rates_txt}."),
-        ("Project services and allowances added once",
-         f"Engineering ({pcosts['engineering_hours']} h), commissioning "
-         f"({pcosts['commissioning_hours']} h), hygiene inspection and documentation are "
-         f"included once for the whole project. Allowances: small material "
-         f"{alw['small_material_pct']}%, supplier contingency "
-         f"{alw['supplier_package_contingency_pct']}%, transport and equipment "
-         f"{alw['transport_equipment_pct']}%."),
-        ("Overhead and the margin scenario",
-         f"Company overhead of {num(overhead)}% is applied to the total cost. The margin "
-         f"of {num(margin)}% is the scenario lever: the price above moves with it, so "
-         f"competitiveness and contribution can be balanced deliberately."),
-    ]
+    s1 = ("Every position matched and traceable",
+          "Each LV position of the tender is matched to a priced catalog product or a "
+          "supplier package. The tender source page is kept with every line, so any "
+          "number in this document can be traced back to the original request.")
+    s3 = ("Labour from measured productivity, adjusted for this building",
+          f"Installation hours follow productivity rules (hours per unit per component). "
+          f"For a school in operation we apply school logistics {fp(pf['school_logistics'])}, "
+          f"mounting height {fp(pf['mounting_height_school'])}, timber interfaces "
+          f"{fp(pf['timber_interface'])} and site efficiency {eff_pct:+.1f}%. "
+          f"Hourly rates: {rates_txt}.")
+    if hide_params:
+        steps = [
+            s1,
+            ("Materials at net rates plus a waste allowance",
+             "Net unit costs reflect current supplier conditions; a material-waste "
+             "allowance covers cutting and handling losses. Supplier-package items run "
+             "at budget rates and are flagged for firm quotations."),
+            s3,
+            ("Project services and allowances added once",
+             f"Engineering ({pcosts['engineering_hours']} h), commissioning "
+             f"({pcosts['commissioning_hours']} h), hygiene inspection and documentation "
+             f"are included once for the whole project, together with allowances for "
+             f"small material, supplier contingency, transport and equipment."),
+            ("Overhead and the price build-up",
+             "Company overhead is applied to the total cost. The price reflects our "
+             "target risk-return balance for this project."),
+        ]
+    else:
+        steps = [
+            s1,
+            ("Materials at net rates plus a waste allowance",
+             f"Net unit costs reflect current supplier conditions; a {num(waste)}% "
+             f"material-waste allowance covers cutting and handling losses. Supplier-package "
+             f"items run at budget rates and are flagged for firm quotations."),
+            s3,
+            ("Project services and allowances added once",
+             f"Engineering ({pcosts['engineering_hours']} h), commissioning "
+             f"({pcosts['commissioning_hours']} h), hygiene inspection and documentation are "
+             f"included once for the whole project. Allowances: small material "
+             f"{alw['small_material_pct']}%, supplier contingency "
+             f"{alw['supplier_package_contingency_pct']}%, transport and equipment "
+             f"{alw['transport_equipment_pct']}%."),
+            ("Overhead and the margin scenario",
+             f"Company overhead of {num(overhead)}% is applied to the total cost. The margin "
+             f"of {num(margin)}% is the scenario lever: the price above moves with it, so "
+             f"competitiveness and contribution can be balanced deliberately."),
+        ]
     return {"rows": rows, "material": material, "labour": labour, "direct": direct,
             "services": services, "allowances": allowances, "baseline": baseline,
             "price": price, "n": n, "review": review, "src": src, "steps": steps,
-            "chf": chf, "num": num}
+            "chf": chf, "num": num, "hp": hide_params, "hn": hide_notes}
 
 
 def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
-               margin: float, descriptions: dict | None = None) -> bytes:
+               margin: float, descriptions: dict | None = None,
+               hide_params: bool = False, hide_notes: bool = False) -> bytes:
     """Client-facing offer summary: branded cover with KPI cards, the big
     indicative price, a "how and why" methodology, and the position table."""
-    d = _offer_data(calc, params, waste, overhead, margin, descriptions)
+    d = _offer_data(calc, params, waste, overhead, margin, descriptions,
+                    hide_params, hide_notes)
     (rows, material, labour, direct, services, allowances, baseline, price,
      n, review, src, steps, chf, num) = (
      d["rows"], d["material"], d["labour"], d["direct"], d["services"],
@@ -495,16 +520,20 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
     pg.text(MARGIN, PAGE_H - 100, f"{n} LV positions - currency CHF excl. VAT - source: {src}",
             "F3", 7.5, CREAM, max_w=360)
     pg.text(PAGE_W - MARGIN, PAGE_H - 46, time.strftime("%d %b %Y"), "F2", 10, WHITE, align="right")
-    pg.text(PAGE_W - MARGIN, PAGE_H - 62, "SCENARIO", "F3", 6.5, CREAM, align="right")
-    pg.text(PAGE_W - MARGIN, PAGE_H - 76, f"waste {num(waste)}% / overhead {num(overhead)}%",
-            "F1", 8.5, WHITE, align="right")
-    pg.text(PAGE_W - MARGIN, PAGE_H - 90, f"margin {num(margin)}%", "F1", 8.5, WHITE, align="right")
+    if not d["hp"]:
+        pg.text(PAGE_W - MARGIN, PAGE_H - 62, "SCENARIO", "F3", 6.5, CREAM, align="right")
+        pg.text(PAGE_W - MARGIN, PAGE_H - 76, f"waste {num(waste)}% / overhead {num(overhead)}%",
+                "F1", 8.5, WHITE, align="right")
+        pg.text(PAGE_W - MARGIN, PAGE_H - 90, f"margin {num(margin)}%", "F1", 8.5, WHITE, align="right")
 
     cards = [
-        ("MATERIAL", chf(material), f"{n} positions incl. {num(waste)}% waste"),
+        ("MATERIAL", chf(material),
+         f"{n} positions" if d["hp"] else f"{n} positions incl. {num(waste)}% waste"),
         ("LABOUR", chf(labour), "adjusted installation hours"),
         ("DIRECT COST", chf(direct), "material + labour"),
-        ("COST BASELINE", chf(baseline), f"+ services, allowances, {num(overhead)}% OH"),
+        ("COST BASELINE", chf(baseline),
+         "+ services and allowances" if d["hp"]
+         else f"+ services, allowances, {num(overhead)}% OH"),
     ]
     cw, gap, ch = (PAGE_W - 2 * MARGIN - 3 * 10) / 4, 10, 52
     y0 = PAGE_H - band_h - 5 - 26
@@ -519,22 +548,26 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
     bt = y0 - ch - 14
     pg.rect(MARGIN, bt - 56, PAGE_W - 2 * MARGIN, 56, INK)
     pg.text(MARGIN + 12, bt - 21, "INDICATIVE SELLING PRICE", "F2", 8.5, CREAM)
-    pg.text(MARGIN + 12, bt - 44, f"at {num(margin)}% target margin - not a binding offer",
+    pg.text(MARGIN + 12, bt - 44,
+            "currency CHF excl. VAT" if d["hp"]
+            else f"at {num(margin)}% target margin - not a binding offer",
             "F1", 7.5, (0.75, 0.78, 0.82))
     pg.text(PAGE_W - MARGIN - 14, bt - 38, f"CHF {chf(price)}", "F2", 21, WHITE, align="right")
 
     ry = bt - 56 - 12
-    if review:
-        pg.rect(MARGIN, ry - 17, PAGE_W - 2 * MARGIN, 17, AMBER_BG)
-        pg.text(MARGIN + 8, ry - 12,
-                f"{review} of {n} positions await firm supplier quotations - budget rates "
-                f"used, marked amber in the table", "F1", 7.5, AMBER)
+    if not d["hn"]:
+        if review:
+            pg.rect(MARGIN, ry - 17, PAGE_W - 2 * MARGIN, 17, AMBER_BG)
+            pg.text(MARGIN + 8, ry - 12,
+                    f"{review} of {n} positions await firm supplier quotations - budget rates "
+                    f"used, marked amber in the table", "F1", 7.5, AMBER)
+        else:
+            pg.rect(MARGIN, ry - 17, PAGE_W - 2 * MARGIN, 17, GREEN_BG)
+            pg.text(MARGIN + 8, ry - 12,
+                    f"All {n} positions priced from firm catalog rates", "F1", 7.5, GREEN)
+        my = ry - 17 - 26
     else:
-        pg.rect(MARGIN, ry - 17, PAGE_W - 2 * MARGIN, 17, GREEN_BG)
-        pg.text(MARGIN + 8, ry - 12,
-                f"All {n} positions priced from firm catalog rates", "F1", 7.5, GREEN)
-
-    my = ry - 17 - 26
+        my = ry - 26
     pg.text(MARGIN, my, "How this price is built - and why", "F2", 12.5, INK)
     pg.rect(MARGIN, my - 6, 34, 2, ORANGE)
     sy = my - 24
@@ -568,7 +601,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
             page.rect(MARGIN, y - 22, PAGE_W - 2 * MARGIN, 22, CARD)
             page.text(MARGIN + 10, y - 15, f"Positions ({n})", "F2", 10, INK)
             page.text(PAGE_W - MARGIN - 8, y - 15,
-                      "green dot = firm catalog rate   amber dot = supplier quote pending",
+                      "green dot = firm catalog rate   amber dot = supplier quote",
                       "F1", 6.5, MUTED, align="right")
             y -= 30
         else:
@@ -614,9 +647,11 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
 
 
 def html_report(calc: dict, params: dict, waste: float, overhead: float,
-                margin: float, descriptions: dict | None = None) -> str:
+                margin: float, descriptions: dict | None = None,
+                hide_params: bool = False, hide_notes: bool = False) -> str:
     """Standalone HTML version of the offer (self-contained, prints nicely)."""
-    d = _offer_data(calc, params, waste, overhead, margin, descriptions)
+    d = _offer_data(calc, params, waste, overhead, margin, descriptions,
+                    hide_params, hide_notes)
     rows, chf, num, n = d["rows"], d["chf"], d["num"], d["n"]
     e = lambda t: (str(t).replace("&", "&amp;").replace("<", "&lt;")
                    .replace(">", "&gt;").replace('"', "&quot;"))
@@ -662,10 +697,13 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
   @media print { body { background:#fff; } .wrap { max-width:none; } }
 """
     cards = [
-        ("MATERIAL", chf(d["material"]), f"{n} positions incl. {num(waste)}% waste"),
+        ("MATERIAL", chf(d["material"]),
+         f"{n} positions" if d["hp"] else f"{n} positions incl. {num(waste)}% waste"),
         ("LABOUR", chf(d["labour"]), "adjusted installation hours"),
         ("DIRECT COST", chf(d["direct"]), "material + labour"),
-        ("COST BASELINE", chf(d["baseline"]), f"+ services, allowances, {num(overhead)}% OH"),
+        ("COST BASELINE", chf(d["baseline"]),
+         "+ services and allowances" if d["hp"]
+         else f"+ services, allowances, {num(overhead)}% OH"),
     ]
     steps = "".join(
         f'<div class="step"><div class="no">{i}</div><div><b>{e(t)}</b><p>{e(b)}</p></div></div>'
@@ -676,11 +714,12 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
         f"<td>{chf(mat)}</td><td>{p['adjusted_install_hours']:.2f}</td>"
         f"<td>{chf(p['labour_cost_chf'])}</td><td><b>{chf(direct)}</b></td>"
         f"<td><span class='st {'warn' if p['review_required'] else ''}'>"
-        f"{'quote req.' if p['review_required'] else 'priced'}</span></td></tr>"
+        f"{'supplier quote' if p['review_required'] else 'priced'}</span></td></tr>"
         for p, mat, direct, desc in rows)
-    chip = (f'<span class="chip warn">{d["review"]} of {n} positions await firm supplier '
-            f"quotations - budget rates used</span>" if d["review"]
-            else f'<span class="chip ok">All {n} positions priced from firm catalog rates</span>')
+    chip = ("" if d["hn"] else
+            (f'<span class="chip warn">{d["review"]} of {n} positions await firm supplier '
+             f"quotations - budget rates used</span>" if d["review"]
+             else f'<span class="chip ok">All {n} positions priced from firm catalog rates</span>'))
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Equans AutoTender - {e(calc["project"]["name"])}</title><style>{css}</style></head><body>
 <div class="band">
@@ -688,13 +727,13 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
     <h1>{e(calc["project"]["name"])}</h1>
     <div style="font-size:12.5px;color:#ffd9c7">{n} LV positions - currency CHF excl. VAT -
       source: {e(d["src"])}</div></div>
-  <div class="meta"><b>{time.strftime("%d %b %Y")}</b><br>SCENARIO<br>
-    waste {num(waste)}% / overhead {num(overhead)}%<br>margin {num(margin)}%</div>
+  <div class="meta"><b>{time.strftime("%d %b %Y")}</b>{"" if d["hp"] else f"<br>SCENARIO<br>"
+    f"waste {num(waste)}% / overhead {num(overhead)}%<br>margin {num(margin)}%"}</div>
 </div>
 <div class="wrap">
   <div class="cards">{"".join(f'<div class="card"><div class="k">{k}</div><div class="v">{v}</div><div class="k">{s}</div></div>' for k, v, s in cards)}</div>
   <div class="price"><div><div class="k">INDICATIVE SELLING PRICE</div>
-    <div style="font-size:12px;color:#b9bec6">at {num(margin)}% target margin</div></div>
+    <div style="font-size:12px;color:#b9bec6">{"currency CHF excl. VAT" if d["hp"] else f"at {num(margin)}% target margin"}</div></div>
     <div class="v">CHF {chf(d["price"])}</div></div>
   {chip}
   <h2>How this price is built - and why</h2>{steps}
@@ -714,10 +753,12 @@ def _xesc(t) -> str:
 
 
 def docx_report(calc: dict, params: dict, waste: float, overhead: float,
-                margin: float, descriptions: dict | None = None) -> bytes:
+                margin: float, descriptions: dict | None = None,
+                hide_params: bool = False, hide_notes: bool = False) -> bytes:
     """Minimal OOXML .docx (stdlib zipfile only): title, price, summary,
     methodology and the position table."""
-    d = _offer_data(calc, params, waste, overhead, margin, descriptions)
+    d = _offer_data(calc, params, waste, overhead, margin, descriptions,
+                    hide_params, hide_notes)
     rows, chf, num, n = d["rows"], d["chf"], d["num"], d["n"]
 
     def para(text, bold=False, size=18, color=None, align=None, after=80):
@@ -739,12 +780,14 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
         para("INDICATIVE TENDER CALCULATION", bold=True, size=17, color="D9480F", after=40),
         para(calc["project"]["name"], bold=True, size=40, after=60),
         para(f"{n} LV positions - currency CHF excl. VAT - source: {d['src']} - "
-             f"{time.strftime('%d %b %Y')}   |   scenario: waste {num(waste)}% / "
-             f"overhead {num(overhead)}% / margin {num(margin)}%",
+             f"{time.strftime('%d %b %Y')}" + ("" if d["hp"] else
+             f"   |   scenario: waste {num(waste)}% / "
+             f"overhead {num(overhead)}% / margin {num(margin)}%"),
              size=15, color="6B7280", after=200),
         para("INDICATIVE SELLING PRICE", bold=True, size=17, color="D9480F", after=40),
         para(f"CHF {chf(d['price'])}", bold=True, size=52, after=40),
-        para(f"at {num(margin)}% target margin", size=15, color="6B7280", after=200),
+        para("currency CHF excl. VAT" if d["hp"] else f"at {num(margin)}% target margin",
+             size=15, color="6B7280", after=200),
         para("MATERIAL", bold=True, size=15, color="6B7280", after=20),
         para(chf(d["material"]) + f"  ({n} positions incl. {num(waste)}% waste)", size=19, after=120),
         para("LABOUR", bold=True, size=15, color="6B7280", after=20),
@@ -752,7 +795,8 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
         para("DIRECT COST", bold=True, size=15, color="6B7280", after=20),
         para(chf(d["direct"]) + "  (material + labour)", size=19, after=120),
         para("COST BASELINE", bold=True, size=15, color="6B7280", after=20),
-        para(chf(d["baseline"]) + f"  (+ services, allowances, {num(overhead)}% overhead)",
+        para(chf(d["baseline"]) + ("  (+ services and allowances)" if d["hp"] else
+             f"  (+ services, allowances, {num(overhead)}% overhead)"),
              size=19, after=240),
         para("How this price is built - and why", bold=True, size=26, after=120),
     ]
@@ -768,22 +812,22 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
         cell(h, bold=True, fill="F6F7F9", align=al, width=w) for h, al, w in [
             ("LV", "left", 750), ("DESCRIPTION", "left", 2500), ("QTY", "right", 850),
             ("NET/UNIT", "right", 900), ("MATERIAL", "right", 950), ("HOURS", "right", 800),
-            ("LABOUR", "right", 950), ("DIRECT", "right", 950), ("STATUS", "right", 850)])
+            ("LABOUR", "right", 950), ("DIRECT", "right", 950), ("STATUS", "right", 1000)])
         + "</w:tr>")
     trs = [header]
     for p, mat, direct, desc in rows:
-        status = "quote req." if p["review_required"] else "priced"
+        status = "supplier quote" if p["review_required"] else "priced"
         status_color = "B45309" if p["review_required"] else "37793F"
         trs.append("<w:tr>" + "".join([
             cell(p["lv_id"], width=750),
-            cell(desc[:70], width=2500),
+            cell(desc[:62], width=2350),
             cell(f"{num(p['quantity'])} {p['unit']}", align="right", width=850),
             cell(chf(p["net_unit_cost_chf"]), align="right", width=900),
             cell(chf(mat), align="right", width=950),
             cell(f"{p['adjusted_install_hours']:.2f}", align="right", width=800),
             cell(chf(p["labour_cost_chf"]), align="right", width=950),
             cell(chf(direct), bold=True, align="right", width=950),
-            cell(status, align="right", width=850, color=status_color),
+            cell(status, align="right", width=1000, color=status_color),
         ]) + "</w:tr>")
     body.append(f"<w:tbl><w:tblPr>{borders}</w:tblPr>{''.join(trs)}</w:tbl>")
     body.append(para(f"Equans AutoTender - {calc['project']['name']} - generated "
@@ -893,21 +937,24 @@ class Handler(BaseHTTPRequestHandler):
                 overhead = num("overhead", params["commercial"]["overhead_pct"])
                 margin = num("margin", params["commercial"]["target_margin_pct"])
                 fmt = (q.get("format") or ["pdf"])[0]
+                hide = bool(q.get("hide"))
+                hide_notes = bool(q.get("hide_notes"))
                 offer_disp = _offer_disposition(load_meta(tid), fmt)
                 if fmt == "html":
                     if q.get("inline"):
                         offer_disp["Content-Disposition"] = \
                             offer_disp["Content-Disposition"].replace("attachment", "inline")
                     self._send(200, html_report(calc, params, waste, overhead,
-                                                margin, descriptions).encode(),
+                                                margin, descriptions, hide, hide_notes).encode(),
                                "text/html; charset=utf-8", offer_disp)
                 elif fmt == "docx":
                     self._send(200, docx_report(calc, params, waste, overhead,
-                                                margin, descriptions),
+                                                margin, descriptions, hide, hide_notes),
                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                offer_disp)
                 else:
-                    pdf = pdf_report(calc, params, waste, overhead, margin, descriptions)
+                    pdf = pdf_report(calc, params, waste, overhead, margin,
+                                     descriptions, hide, hide_notes)
                     self._send(200, pdf, "application/pdf", offer_disp)
             else:
                 self._json(404, {"error": f"unknown path {url.path}"})

@@ -24,14 +24,14 @@
   body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink);
          display:flex; height:100vh; overflow:hidden; }
   button { padding:7px 14px; border:1px solid var(--line); border-radius:8px; background:var(--panel);
-           cursor:pointer; font:inherit; }
+           color:var(--ink); cursor:pointer; font:inherit; }
   button:hover { border-color:var(--line-strong); }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.45; cursor:default; }
-  input { font:inherit; }
+  input { font:inherit; color:var(--ink); }
 
   /* ---------- sidebar ---------- */
-  nav { width:240px; flex:0 0 240px; background:var(--panel); border-right:1px solid var(--line);
+  nav { flex:0 0 auto; background:var(--panel); border-right:1px solid var(--line);
         display:flex; flex-direction:column; }
   .brand { padding:16px 18px 12px; font-weight:700; font-size:15px; }
   .brand small { display:block; color:var(--muted); font-weight:400; font-size:11px; }
@@ -60,6 +60,21 @@
                  border:1px solid var(--accent); border-radius:8px; width:300px;
                  background:var(--input-bg); color:var(--ink); }
   .hidden { display:none !important; }
+  nav { width:240px; overflow:hidden; transition:width .18s ease; }
+  body.navoff nav { width:0; border-right-color:transparent; }
+  .nav-inner { width:240px; }
+  .navtoggle { position:absolute; left:240px; top:50%; transform:translateY(-50%);
+               z-index:40; width:16px; height:46px; padding:0;
+               border:1px solid var(--line); border-left:0;
+               border-radius:0 8px 8px 0; background:var(--panel); color:var(--muted);
+               display:flex; align-items:center; justify-content:center;
+               font-size:15px; line-height:1; transition:left .18s ease;
+               box-shadow:2px 0 8px rgba(0,0,0,.06); }
+  .navtoggle:hover { color:var(--ink); }
+  body.navoff .navtoggle { left:0; }
+  .navtoggle .arr-r { display:none; }
+  body.navoff .navtoggle .arr-l { display:none; }
+  body.navoff .navtoggle .arr-r { display:block; }
   .switch { position:relative; display:inline-block; width:44px; height:24px; }
   .switch input { opacity:0; width:0; height:0; }
   .switch .slider { position:absolute; inset:0; background:var(--line-strong);
@@ -89,6 +104,9 @@
             box-shadow:0 8px 28px rgba(0,0,0,.14); z-index:30; overflow:hidden; }
   .dlmenu a { display:block; padding:9px 16px; cursor:pointer; font-size:13.5px; }
   .dlmenu a:hover { background:var(--active-bg); }
+  .dl-opt { display:flex; gap:8px; align-items:center; padding:8px 16px;
+            font-size:12.5px; color:var(--muted); cursor:pointer; }
+  .dl-sep { height:1px; background:var(--line); margin:3px 0; }
   .spacer { flex:1; }
   .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
            background:var(--badge-bg); }
@@ -98,12 +116,45 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 20px; }
   .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
              color:var(--muted); margin:0 0 12px; }
-  .params-row { display:flex; gap:28px; flex-wrap:wrap; align-items:end; }
-  .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .field input[type=number] { width:90px; padding:6px 8px; border:1px solid var(--line);
-                              border-radius:8px; background:var(--input-bg); color:var(--ink); }
-  .field input[type=range] { width:220px; accent-color:var(--accent); }
-  .field output { font-weight:600; }
+  .scenario { display:flex; align-items:center; gap:28px; flex-wrap:wrap; }
+  .sc-margin { flex:1 1 320px; min-width:260px; }
+  .sc-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+  .sc-label { font-size:12px; color:var(--muted); }
+  .sc-value { font-size:21px; font-weight:700; color:var(--accent);
+              font-variant-numeric:tabular-nums; }
+  .sc-value small { font-size:12px; font-weight:600; margin-left:1px; }
+  .sc-margin input[type=range] { width:100%; accent-color:var(--accent); }
+  .sc-track { position:relative; height:12px; margin-top:3px; }
+  .sc-end { position:absolute; top:0; font-size:10.5px; color:var(--muted); }
+  .sc-dot { position:absolute; top:2px; width:7px; height:7px; border-radius:50%;
+            transform:translateX(-50%); background:var(--mk); }
+  .sc-legend { display:flex; gap:8px; margin-top:9px; flex-wrap:wrap; }
+  .sc-chip { display:flex; align-items:center; gap:6px; padding:5px 11px;
+             border:1px solid var(--line); border-radius:999px; background:var(--panel);
+             font:inherit; }
+  .sc-chip:hover { border-color:var(--line-strong); }
+  .sc-chip.on { background:var(--active-bg); border-color:transparent; }
+  .sc-chip i { width:8px; height:8px; border-radius:50%; background:var(--mk); }
+  .sc-chip b { font-size:11.5px; font-weight:650; color:var(--mk); }
+  .sc-chip span { font-size:11px; color:var(--muted); }
+  .mk-agg { --mk:var(--st-ok-ink); }
+  .mk-tgt { --mk:var(--accent); }
+  .mk-con { --mk:#4a7fc1; }
+  .sc-right { display:flex; align-items:baseline; gap:12px; }
+  .sc-win { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .sc-divider { width:1px; align-self:stretch; background:var(--line); }
+  .sc-inputs { display:flex; gap:16px; flex-wrap:wrap; }
+  .sc-inputs > label > span { display:block; font-size:12px; color:var(--muted);
+                              margin-bottom:6px; }
+  .sc-field { display:flex; align-items:center; border:1px solid var(--line);
+              border-radius:8px; background:var(--input-bg); }
+  .sc-field:focus-within { border-color:var(--accent); }
+  .sc-field input { width:74px; padding:7px 2px 7px 10px; border:0; background:transparent;
+                    text-align:right; appearance:textfield; }
+  .sc-field input::-webkit-outer-spin-button,
+  .sc-field input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  .sc-field input:focus { outline:none; }
+  .sc-field i { font-style:normal; color:var(--muted); padding-right:10px; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; }
   .stat { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; }
   .stat .k { font-size:12px; color:var(--muted); }
@@ -180,6 +231,7 @@
 </head>
 <body>
 <nav>
+  <div class="nav-inner">
   <div class="brand">Equans AutoTender</div>
   <div class="navlabel">TENDERS</div>
   <ul id="tenderList"></ul>
@@ -191,7 +243,12 @@
     <button id="addBtn" style="width:100%">+ Add tender</button>
     <button id="settingsBtn" class="navlink">&#9881; Settings</button>
   </div>
+  </div>
 </nav>
+
+<button id="navToggle" class="navtoggle" title="show/hide the tenders panel">
+  <span class="arr-l">&#8249;</span><span class="arr-r">&#8250;</span>
+</button>
 
 <main>
   <div class="topbar" id="topbar">
@@ -211,6 +268,13 @@
     <div class="dlwrap hidden" id="dlwrap">
       <button id="pdfBtn" class="primary">Download &#9662;</button>
       <div id="dlMenu" class="dlmenu hidden">
+        <label class="dl-opt" title="leave waste, overhead and margin out of the exported offer">
+          <input type="checkbox" id="hideParams"> hide cost parameters
+        </label>
+        <label class="dl-opt" title="leave the supplier-quotations notice out of the exported offer">
+          <input type="checkbox" id="hideNotes"> hide supplier-quote note
+        </label>
+        <div class="dl-sep"></div>
         <a data-fmt="pdf" title="portable document">PDF</a>
         <a data-fmt="html" title="standalone web page">HTML</a>
         <a data-fmt="docx" title="editable Word document">DOCX</a>
@@ -249,12 +313,31 @@ function setDarkMode(on) {
   localStorage.setItem("autotender_dark", on ? "1" : "0");
 }
 if (localStorage.getItem("autotender_dark") === "1") document.body.classList.add("dark");
+if (localStorage.getItem("autotender_nav") === "1") document.body.classList.add("navoff");
 let tenders = [], current = null;      // current = tender id or null
 let meta = null, calc = null, params = null;
 let dirtyFields = new Map();           // lv_id -> Set of edited field names
 let sortState = { key: null, dir: 1 }; // column key + 1 asc / -1 desc
 let view = "tender";                   // "tender" | "settings"
 let pathExpanded = false;              // source-path disclosure in the topbar
+let SCENARIOS = [                      // bid-strategy pointers (margins from
+  ["Aggressive", 2.5, 69, "mk-agg"],   // params; win % static demo values
+  ["Target", 4.0, 63, "mk-tgt"],       // until _3_Prediction provides them)
+  ["Conservative", 6.5, 49, "mk-con"],
+];
+let winAnchors = SCENARIOS.map(s => [s[1], s[2]]);
+
+function winChance(margin) {           // piecewise-linear between anchors
+  const a = winAnchors;
+  if (margin <= a[0][0]) return a[0][1];
+  if (margin >= a[a.length - 1][0]) return a[a.length - 1][1];
+  for (let i = 0; i < a.length - 1; i++) {
+    const [x1, y1] = a[i], [x2, y2] = a[i + 1];
+    if (margin >= x1 && margin <= x2)
+      return Math.round(y1 + (y2 - y1) * (margin - x1) / (x2 - x1));
+  }
+  return a[0][1];
+}
 let uiSettings = null;
 
 const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
@@ -372,20 +455,47 @@ function renderMain() {
   ["saveBtn", "dlwrap"].forEach(id => $(id).classList.remove("hidden"));
 
   const p = params;
+  const so = (p.stretch_bid_optimization || {}).scenario_margins_pct || {};
+  SCENARIOS = [
+    ["Aggressive", so.Aggressive ?? 2.5, 69, "mk-agg"],
+    ["Target", so.Target ?? 4.0, 63, "mk-tgt"],
+    ["Conservative", so.Conservative ?? 6.5, 49, "mk-con"],
+  ];
+  winAnchors = SCENARIOS.map(s => [s[1], s[2]]);
+  const maxMargin = 15;
   $("content").innerHTML = `
     <section class="card">
       <h2>Scenario</h2>
-      <div class="params-row">
-        <div class="field">
-          <label>Target margin <output id="marginOut">${p.commercial.target_margin_pct}</output>%</label>
-          <input type="range" id="margin" min="0" max="15" step="0.5" value="${p.commercial.target_margin_pct}">
+      <div class="scenario">
+        <div class="sc-margin">
+          <div class="sc-head">
+            <span class="sc-label">Target margin</span>
+            <span class="sc-right">
+              <span class="sc-win" title="estimated win probability - demo values until _3_Prediction connects">&#8776; <output id="winOut">-</output>% win chance</span>
+              <span class="sc-value"><output id="marginOut">${p.commercial.target_margin_pct}</output><small>%</small></span>
+            </span>
+          </div>
+          <input type="range" id="margin" min="0" max="${maxMargin}" step="0.5" value="${p.commercial.target_margin_pct}">
+          <div class="sc-track">
+            <span class="sc-end">0%</span>
+            ${SCENARIOS.map(([name, m, w, cls]) =>
+              `<i class="sc-dot ${cls}" style="left:${(m / maxMargin * 100).toFixed(1)}%"
+                 title="${name}: ${m}% margin, ~${w}% win chance"></i>`).join("")}
+            <span class="sc-end" style="left:auto;right:0">${maxMargin}%</span>
+          </div>
+          <div class="sc-legend">
+            ${SCENARIOS.map(([name, m, w, cls]) =>
+              `<button class="sc-chip ${cls}" data-margin="${m}" title="set margin to ${m}% (${name})">
+                 <i></i><b>${name}</b><span>${m}% &middot; ~${w}% win</span></button>`).join("")}
+          </div>
         </div>
-        <div class="field"><label>Overhead %</label>
-          <input type="number" id="overhead" step="0.5" min="0" max="30" value="${p.commercial.overhead_pct}"></div>
-        <div class="field"><label>Material waste %</label>
-          <input type="number" id="waste" step="0.5" min="0" max="20" value="${p.allowances.material_waste_pct}"></div>
-        <div class="field"><label>Status</label>
-          <span class="badge">${esc(meta.status)}</span></div>
+        <div class="sc-divider"></div>
+        <div class="sc-inputs">
+          <label><span>Overhead</span>
+            <div class="sc-field"><input type="number" id="overhead" step="0.5" min="0" max="30" value="${p.commercial.overhead_pct}"><i>%</i></div></label>
+          <label><span>Material waste</span>
+            <div class="sc-field"><input type="number" id="waste" step="0.5" min="0" max="20" value="${p.allowances.material_waste_pct}"><i>%</i></div></label>
+        </div>
       </div>
     </section>
     <section class="stats">
@@ -446,6 +556,12 @@ function renderMain() {
 
   ["margin", "overhead", "waste"].forEach(id =>
     $(id).addEventListener("input", recompute));
+  document.querySelectorAll(".sc-chip").forEach(chip =>
+    chip.addEventListener("click", () => {
+      const s = $("margin");
+      s.value = chip.dataset.margin;
+      s.dispatchEvent(new Event("input"));
+    }));
   $("posTable").querySelectorAll("th[data-key]").forEach(th =>
     th.addEventListener("click", () => {
       if (sortState.key === th.dataset.key) sortState.dir *= -1;
@@ -465,6 +581,9 @@ function recompute() {
   const overhead = parseFloat($("overhead").value) || 0;
   const margin = parseFloat($("margin").value) || 0;
   $("marginOut").value = margin;
+  if ($("winOut")) $("winOut").textContent = winChance(margin);
+  document.querySelectorAll(".sc-chip").forEach(chip =>
+    chip.classList.toggle("on", Math.abs(parseFloat(chip.dataset.margin) - margin) < 0.26));
 
   let material = 0, labour = 0, supplierMat = 0;
   document.querySelectorAll("#posTable tbody tr").forEach(tr => {
@@ -529,7 +648,7 @@ function renderSettings() {
   $("dirtyBadge").classList.add("hidden");
   $("reviewBadge").classList.add("hidden");
   $("tenderTitle").textContent = "Settings";
-  $("sub").textContent = "LoRA models";
+  $("sub").textContent = "";
   if (!uiSettings) { loadSettings(); return; }
 
   $("content").innerHTML = `
@@ -667,6 +786,11 @@ async function saveSettings() {
 
 $("settingsBtn").addEventListener("click", () => { view = "settings"; renderMain(); });
 
+$("navToggle").addEventListener("click", () => {
+  const off = document.body.classList.toggle("navoff");
+  localStorage.setItem("autotender_nav", off ? "1" : "0");
+});
+
 /* ------------------------------------------------ actions */
 
 $("addBtn").addEventListener("click", () => {
@@ -792,12 +916,20 @@ document.addEventListener("click", e => {
 });
 $("dlMenu").addEventListener("click", e => {
   const item = e.target.closest("a[data-fmt]");
-  if (!item) return;
+  if (!item) return;   // checkbox label clicks just toggle, keep menu open
   $("dlMenu").classList.add("hidden");
-  const q = `format=${item.dataset.fmt}&margin=${$("margin").value}` +
-            `&overhead=${$("overhead").value}&waste=${$("waste").value}`;
+  const q = `format=${item.dataset.fmt}` +
+            `&margin=${$("margin").value}&overhead=${$("overhead").value}&waste=${$("waste").value}` +
+            `&hide=${$("hideParams").checked ? 1 : 0}` +
+            `&hide_notes=${$("hideNotes").checked ? 1 : 0}`;
   window.open(`/api/tenders/${current}/pdf?${q}`, "_blank");
 });
+$("hideParams").checked = localStorage.getItem("autotender_hide_params") === "1";
+$("hideParams").addEventListener("change", e =>
+  localStorage.setItem("autotender_hide_params", e.target.checked ? "1" : "0"));
+$("hideNotes").checked = localStorage.getItem("autotender_hide_notes") === "1";
+$("hideNotes").addEventListener("change", e =>
+  localStorage.setItem("autotender_hide_notes", e.target.checked ? "1" : "0"));
 
 refreshTenders();
 </script>
