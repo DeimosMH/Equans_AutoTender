@@ -61,7 +61,7 @@
 
 | Technique | What it does | Trade-offs | Recommendation here |
 |---|---|---|---|
-| Page-Hinkley test | Cumulative deviation of a stream metric vs its running mean; alarms on sustained shift | ~20 lines, stdlib; tunable sensitivity (delta/gamma); designed for gradual drift | **First choice.** Run on the stream of win-model errors: `error = 1 - predicted_win_prob` for losses, `-predicted_win_prob` for wins |
+| Page-Hinkley test | Cumulative deviation of a stream metric vs its running mean; alarms on sustained shift | ~20 lines, stdlib; tunable sensitivity (delta/gamma); designed for gradual drift | **First choice.** Run on the stream of win-model calibration errors: `error = p_pred - outcome` (loss -> +p_pred, win -> -(1-p_pred); mean 0 iff calibrated). [R4 correction - round 1-3 wrote `1-p` for losses / `-p` for wins, whose mean is `1-p-q`, i.e. -0.10 at p=q=0.55: NOT zero-mean. See R4.4-F.] |
 | DDM (Drift Detection Method) | Binomial error-rate bounds (warning/drift at 2/3 std) | Simple; assumes binary error stream | Second choice; same data as P-H |
 | ADWIN | Adaptive windowing, theoretical guarantees, no params | Real implementation is nontrivial; `river` library has it | Only if `river` is ever allowed as a dependency |
 | Rolling calibration plot | Predicted win prob vs realized win rate by decile, last N tenders | No alarm logic, but humans read it instantly; also detects overconfidence | **Put in the generated report** - it doubles as the "should we switch models" evidence |
@@ -241,7 +241,7 @@ From river's docs and source (fetched today):
 | Stdlib re-implementation | ~25-line core | large (exponential histogram w/ bucket merging, variance bookkeeping) |
 | Default blind spot at our volume | `min_instances=30` = 2.5 years of monthly tenders before *any* detection | `clock=32` checks only every 32 points; `grace_period=10` |
 
-**Conclusion (sharpened):** PH remains the first choice, but defaults must be adapted: set `min_instances` ~ 8-10 (accept the variance), raise `threshold` to compensate for false alarms (river docs: lower threshold -> "more false positives"), and run it on the *weekly-cadence* stream of prediction errors (every tender that gets a decision adds a point; interim points from calibration checks on submitted-but-undecided tenders can pad the stream), not on a monthly-only cadence. Two-sided mode (`both`) matters because improvement is as informative as decay. ADWIN: adopt only if `river` is ever accepted as a dependency - do not hand-port it.
+**Conclusion (as written in round 2; two R4 corrections in brackets):** PH remains the first choice, but defaults must be adapted: set `min_instances` ~ 8-10 (accept the variance), raise `threshold` to compensate for false alarms (river docs: lower threshold -> "more false positives"), and run it on the *weekly-cadence* stream of prediction errors (every tender that gets a decision adds a point; ~~interim points from calibration checks on submitted-but-undecided tenders can pad the stream~~ [R4: WRONG - an undecided tender has no outcome, hence no calibration error; padding would silently change the stream semantics. PH runs on decided-outcome errors ONLY - see R4.2-C5]), not on a monthly-only cadence. [R4: the "weekly cadence" premise is also optimistic - realistic volume is 1-5 decided tenders/month; operating characteristics in calendar time are in R4.4-F.] Two-sided mode (`both`) matters because improvement is as informative as decay. ADWIN: adopt only if `river` is ever accepted as a dependency - do not hand-port it. [R4: of the two knobs this paragraph tunes, `min_instances` turned out irrelevant at thr>=6 (R3.2) and the threshold is the real knob - round 3 already established this; round 4 re-confirmed (R4.4-F).]
 
 Also verified round-1's DDM note indirectly: PH "does not signal warning zones, only change detections" (river docs) - so if a pre-alarm tier is wanted (round-1's report), it must be layered manually (e.g. PH threshold x0.5 as "watch").
 
@@ -254,6 +254,8 @@ posterior mean (shrunk rate): E[p|w,n] = (alpha0 + w) / (alpha0 + beta0 + n)
 95% credible interval:        seeded quantiles of random.betavariate(a, b)  (stdlib)
 MoM prior from segment rates m, v:  common = m(1-m)/v - 1;  alpha0 = m*common;  beta0 = (1-m)*common
 ```
+
+[R4: the interval LEVEL was inconsistent across rounds - this section computed 95%, R3.1/R3.5 standardized on 90% (`CRI_LEVEL = 0.90`). Standard going forward: **90% CrI** for segment display (intervals are already wide at small n). Reproducibility trap found while re-verifying: the seeded-draws idiom must create `random.Random(seed)` ONCE and let the generator close over it - `sorted(random.Random(seed).betavariate(...) for ...)` re-seeds every draw and collapses the CrI to a point (bit me in the first R4 run; the R3 scripts are correct).]
 
 Computed today with stdlib only (prior `Beta(3,7)`, i.e. pseudo-count total 10 around global mean 0.30):
 
@@ -407,7 +409,7 @@ class PageHinkley:
              self._max_dec - self._sum_dec > self.threshold))
 ```
 
-Stream = the _4 use case: champion predicts `p_pred=0.55` fixed; true win rate steps `0.55 -> 0.25` at t=50 (120 pts); per-tender error `1-p_pred` if lost / `-p_pred` if won (mean 0 -> +0.30). Seeds 7/11/42 + 10-seed robustness. Decisive rows:
+Stream = the _4 use case: champion predicts `p_pred=0.55` fixed; true win rate steps `0.55 -> 0.25` at t=50 (120 pts). Per-tender error as executed in round 3: `1-p_pred` if lost / `-p_pred` if won. **[R4 correction: that definition's mean is `1-p-q` = -0.10 at p=q=0.55 - the "mean 0 -> +0.30" prose was wrong (the stream ran at mean -0.10 -> +0.20; the shift magnitude +0.30 was right). The zero-mean calibration error is `p_pred - outcome`: loss -> +p, win -> -(1-p), E = p-q. R4.4-F re-ran everything at 1000 reps with the corrected stream: detection 96.1%, delay median 23 (not 12.5), pre-change FA 2.8% of runs. The R3 numbers below were measured on the mis-specified (pre-biased) stream and 3-10 lucky seeds - keep for history, superseded by R4.4-F.]** Seeds 7/11/42 + 10-seed robustness. Decisive rows:
 
 | config | detection delay (3 seeds) | false alarms |
 |---|---|---|
@@ -416,11 +418,11 @@ Stream = the _4 use case: champion predicts `p_pred=0.55` fixed; true win rate s
 | **mi=10, thr=8, raw** | **8, 42, 22** | **0** |
 | mi=10, thr=8, rolling-5 smoothed | 9, 45, 26 | 0 |
 
-- 10-seed robustness (thr=8, raw): detected 10/10, delays median **12.5** / mean 19.9; stationary 120-pt controls 0 alarms.
+- 10-seed robustness (thr=8, raw): detected 10/10, delays median **12.5** / mean 19.9; stationary 120-pt controls 0 alarms. [R4 at 1000 reps, corrected stream: 38% of stationary 120-pt runs DO alarm - the 0-in-10 was seed luck; see R4.4-F.]
 - **False-alarm horizon (the surprise):** stationary 1000-pt runs give 42 alarms / 8000 pts at thr=8 (**~1/190 pts**), 30/8000 at thr=10 (~1/267), 17/8000 at thr=12 (~1/471). Short windows hide this - the alarm rate is a *horizon* property.
 - Delay vs thr (10 seeds): 30pp collapse median 12.5/25.5/39.0 at thr 8/10/12; 15pp drift median 34/68.5/100.5 - small drifts are only marginally distinguishable from noise at any threshold.
 - `min_instances` irrelevant at thr>=6 (identical delays at mi 8/10/15/30) - threshold dominates; mi=10 stays as a warm-up gate. Smoothing buys nothing (median 26 vs 12.5) - **feed the RAW error stream**.
-- **Consequence:** a PH alarm triggers a calibration review (rolling calibration plot), NEVER an automatic flip - at ~1 false alarm per ~190 weekly points (~once per 3.6 years), review-cost FPs are acceptable, switch-cost ones are not. Round-2's "min_instances 8-10" fix was aimed at the wrong parameter.
+- **Consequence:** a PH alarm triggers a calibration review (rolling calibration plot), NEVER an automatic flip - at ~1 false alarm per ~181 points, review-cost FPs are acceptable, switch-cost ones are not. [R4 calendar-time honesty: at the realistic 1-5 decided tenders/month, 181 points = 3-15 years between FPs - but a 30pp collapse takes a median 23 points = 5-23 months to detect. PH is a slow tripwire, not an early-warning system; the quarterly calibration report (R1 §9) stays the primary staleness check. Round-2's "min_instances 8-10" fix was aimed at the wrong parameter.]
 
 ### R3.3 (c) Promotion-gate math - EXECUTED
 
@@ -468,7 +470,7 @@ CRI_DRAWS              = 200_000 # seeded random.betavariate, 90% CrI
 # Page-Hinkley on the RAW per-tender error stream       [R3.2]
 PH_MIN_INSTANCES = 10           # warm-up only; threshold is the real knob
 PH_DELTA         = 0.005        # river default, kept
-PH_THRESHOLD     = 8.0          # 30pp collapse: median 12.5 pts; FA ~1/190 pts
+PH_THRESHOLD     = 8.0          # 30pp collapse: median 23 pts, 96% power @120; FA 1/181 pts (R4.4-F)
 PH_ALPHA         = 0.9999       # river default, kept
 # alarm -> calibration review ONLY, never an automatic version flip
 
@@ -489,7 +491,7 @@ MC_DRAWS                  = 100_000
 
 1. MoM degeneracy is exact (all-binary rates -> strength identically 0); `floored_prior` must branch on strength <= 0 (default 10), not just clamp.
 2. River PH defaults are provably deaf at our volume; `min_instances` - round 2's recommended fix - does nothing; **threshold 8.0** is the fix.
-3. PH false alarms are horizon-dependent (invisible in 120-pt windows, ~1/190 pts at thr=8 over 1000 pts) - justify the constant against the long-run rate; keep the alarm action cheap (review, not switch).
+3. PH false alarms are horizon- AND AGE-dependent (R4: 82% of stable-window FAs occur at t>=60, only 8% before t=50; long-run rate ~1/181 pts at thr=8; 38% of 120-pt stable runs contain >=1 alarm) - justify the constant against the long-run rate; keep the alarm action cheap (review, not switch).
 4. G1 round-2 tiering left n=30-49 undefined -> 2 tiers (n>=50 margin / else strict); the discontinuity (0.86 passes at n=52, fails at n=40) is acceptable because golden-set size is fixed per task.
 5. G3 auto-promote needs +20pp at n=30 - effectively dead code by construction; the UI must not advertise automatic promotion as the normal path (human confirm is).
 6. Live supplier-quote share is 0.73, not agent 5's illustrative 0.22 - regenerate step2 features/fixtures from real `calc.json` values.
@@ -505,3 +507,119 @@ MC_DRAWS                  = 100_000
 - SearxNG `http://127.0.0.1:8888`: two JSON-API checks, all general engines suspended both times - three rounds in a row; pre-register primary URLs or use direct fetches.
 - Direct fetch: https://raw.githubusercontent.com/online-ml/river/main/river/drift/page_hinkley.py (200, 127 lines - port basis).
 - All numbers in R3.1-R3.4 are outputs of the four /tmp scripts, run today against the live artifacts (`t20261010_143121_4c08/calc.json`, `materials/project_parameters.json`).
+
+---
+
+## ROUND 4 - LOGICAL ANALYSIS, CROSS-REPORT CONSISTENCY, VALIDATION
+
+- **Date:** 2026-10-10 (round 4). **Mission:** logical analysis first - map every statistical gate to a real decision in agent 5's blueprint, reconcile constants, audit internal consistency, check cross-module data contracts - then update/verify by execution.
+- **Inputs re-read in full:** `context_agent_5` (round-3 state at 918 lines when analysis began; **its round 4 landed mid-round at 1177 lines and was re-read to the end before finalizing R4.1/R4.2 below**; agent 3's round 4 also landed mid-round at 670 lines - re-checked for the O1 gate conflict), `context_agent_3`/`_4`, live `src/web_ui/server.py` (1117 lines - all pinned line numbers from R2/R3 re-verified: `create_tender` L73-82, `_norm_settings` L118, update handler L994-1009 with `t["selected"] = version` at L1007, upload-data L1010), live `ui_settings.json`, live tender folders, `static/index.html`, `materials/expected_output_example.json` + `project_parameters.json`.
+- **Scripts (kept, stdlib only):** `/tmp/r4_verify.py` (Beta-Binomial, anchors, gates), `/tmp/r4_ph_mc.py` + `/tmp/r4_ph_age.py` (1000-rep PH Monte Carlo). Python 3.13.2; no scipy needed anywhere (`random.betavariate` + arithmetic reproduce every number).
+- **Search:** SearxNG engines WORKING again this round (first time since round 1) - spot query returned live results; river source re-fetched directly (200).
+
+### R4.1 Gate -> decision mapping (every gate must wire into agent 5's blueprint)
+
+| # | Gate (this report) | Constants | Consumer in agent 5's blueprint | Verdict |
+|---|---|---|---|---|
+| G1 | Golden-set non-inferiority, 2 tiers (n>=50 margin -0.02 / n<50 strict), per-example floor 0.50 | `GATE_GOLDEN_*` | eval endpoint (agent 5 R3.5-5 `/evaluated`, unified with my R2.6-4 `/evaluate` by his round-4 R4.2 row 2): pass -> `staged->candidate`, fail -> `rejected`, scores kept in `eval` | **WIRED** |
+| G2 | Brier backtest non-inferiority, win_ratio only, out-of-time | `<= active+0.02, n>=10` | Same eval endpoint + R3.6 gate list; surfaced on the promote screen (R2.4 HITL evidence table) | **WIRED** |
+| G3 | Auto-promote posterior P(challenger>active) | `n>=30, P>0.90` | R2.2-4 / R3.6 auto-flip eligibility; else human `/promote` | **WIRED** (and correctly near-dead: needs +20pp at n=30) |
+| G4 | Page-Hinkley drift alarm on decided-outcome calibration errors | `thr=8, mi=10, delta=0.005, alpha=0.9999` | agent 5 round 4 (landed mid-round, concurrent): `drift_monitor(outcomes)` added to step3_observe (R3.2 sketch, "[Round 4]"), settings.yaml gains the PH block verbatim (R3.1), alarm -> "calibration review + feedback_log.jsonl entry, NEVER an automatic version flip" (R4.2 row 8 - adopted from R3.2 here) | **WIRED as of agent 5 round 4** - but its docstring copied the OLD erroneous error formula (`1-p` if lost / `-p` if won) from my round-3 text: -> R4.2-C1b |
+| G5 | Structural-loss verdict (quote-risk vs pricing vs structural) | agent 5: break-even `q = cost_stage/sup_cost`; this report R3.4: coverage ratio (contingency + 10% budget-rate error >= gap) | step2 verdict -> step5 next actions ("request quotes earlier for the N supplier positions" = the requote-supplier-package decision) | **WIRED but rule is DUPLICATED -> R4.2-C4** |
+| G6 | Beta-Binomial segment/competitor posterior (served estimate, not a pass/fail gate) | S=10 floor 5 cap 30, 90% CrI | step3 `competitor_stats` -> `_3` features (`competitor_median_delta_pct`) + prompt priors; agent 5 R3.1 settings.yaml has the constants | **WIRED** (semantics issue -> R4.3-C) |
+
+**Blueprint decisions with NO gate behind them:**
+
+- **Rollback** (R3.5-4: promote older seq, reason recorded) is human-only by design. Agent 5's round 4 wired the PH alarm to a feedback_log record + report surface, but nothing yet *recommends* rollback or a retrain cycle on sustained bias. Remaining delta (open O6): PH alarm + confirming calibration bias should (a) set `provenance.trigger="drift"` on the NEXT step4 run (recommend retraining, never execute) and (b) attach a rollback-review hint to the active version's row. Human still clicks.
+- **Catalog auto-apply** (agent 5 R1 §5 / R3.1 `catalog_auto_apply_delta_pct`): threshold value still unspecified in agent 5's round-4 settings.yaml sketch. Not statistics-critical (deterministic price-delta rule), but the constant needs a number; propose `1.0` pct as the auto-apply floor (below catalog-price rounding noise), pending product-owner confirmation. Open item O4.
+
+**Confirmations of agent 5's round-4 open questions, from this side (resolves his R4.6-1 and the promote-key row):**
+
+1. Unified eval endpoint: **accepted** - `POST /api/settings/evaluate {task, seq, scores?}`: with `scores` = record external trainer result (`staged->candidate|rejected` on pass/fail); without = run the G1/G2 gates server-side (golden + Brier need no adapter on this machine - matches agent 5's R4.5-6 point that even the heuristic curve's P is backtestable). Identical transitions to my R2.6-4 design.
+2. Promote key: **seq canonical, version accepted as fallback lookup** - the live collision ids ("2026-10-10 15:21"/"15:22", still present in `ui_settings.json`) make version ids ambiguous; my R2.6-5 asked for `{task, version, note}`, agent 5's `{task, seq, note}` is strictly safer. Tie-break: int seq if present.
+3. Dual-baseline rule (agent 5 R4.1: decompose on `project_cost` 557228.55 only; subset 414489.12 is validate-only): **consistent with R3.4 here** (all executed decomposition numbers used the project baseline); no conflict to resolve. Same for agent 5's R4.2-row-6 rule that `outcome.our_bid_chf` is canonical while my R3.4's "submitted = Target 581000" was an example parameter choice, not a competing spec.
+
+### R4.2 Contradiction matrix vs agent 5 + resolutions
+
+| # | Divergence | Evidence | Resolution (tie-break criterion) |
+|---|---|---|---|
+| C1 | PH drift detection: finalized here (R3.5), absent from agent 5's round-1-3 blueprint | written against agent 5's round-3 state; **agent 5's round 4 landed mid-round and adopted it** (`drift_monitor`, PH constants, alarm action verbatim - his R4.1/R4.2 row 8) | **RESOLVED (concurrent).** My proposed wiring survives as the remaining delta -> O6: drift-triggered retrain recommendation (`provenance.trigger="drift"` on the next step4 run) + rollback-review hint. |
+| C1b | **NEW this round:** agent 5's `drift_monitor` docstring (his R3.2 sketch, "[Round 4]" annotation) specifies the stream as "1-p if lost / -p if won" - the exact formula proven wrong in R4.4-F (mean `1-p-q` = -0.10 at p=q=0.55, not zero) | his L701-703 vs R4.4-F here | Agent 5's round 5 must copy the corrected definition `e = p_pred - outcome` (loss -> +p, win -> -(1-p)) and the refreshed numbers (delay median 23 / power 96.1% / FA 1/181 - his R4.2 row 8 still quotes my stale "1/190"). Constants unchanged; only the formula text and claims. |
+| C2 | settings.yaml constant list was a subset (round-3 state: no golden tiers, no PH block, no backtest min-n) | agent 5 R3.1 round 3 vs R3.5 block here | **RESOLVED by agent 5 round 4**: sketch now carries golden min_n 50 / margin 0.02 / floor 0.50, backtest min_n 10 / margin 0.02, auto-promote 30 / 0.90, prior 10/5/30, PH block - all identical to R3.5 here. Verified value-by-value. |
+| C3 | `min_decided 30` naming ambiguity (round-3 state) | backtest min is 10, auto-promote 30 | **RESOLVED by agent 5 round 4**: sketch now spells "backtest min_n 10" and "auto-promote n>=30" separately. |
+| C4 | Two rules for the same quote-risk verdict: agent 5's break-even quote delta vs this report's coverage ratio | agent 5 R3.4 `quote_sensitivity flips at q ~= cost_stage/sup_cost` (live: 5.91%) vs R3.4 here (coverage 207% of gap) | **RESOLVED by agent 5 round 4** (his R4.2 row 6): break-even q stays the verdict rule (one derived quantity, zero free parameters); the coverage ratio is printed by step2_why as supporting evidence - exactly the resolution proposed here. |
+| C5 | Stream cadence: R2.3 here claimed weekly points padded with interim calibration checks; reality is 1-5 decided tenders/month and undecided tenders have no error point | R4.4-F calendar-time math | Fixed in place (R2.3 bracket). PH runs on decided-outcome errors only. If a higher-volume drift signal is wanted, the escape valve is a SECOND detector on `_3`'s market-wide input stream (agent 4 measures ~1.5-3 HVAC awards/day from simap) - input drift, not model-error drift; both rows already exist in section 5. |
+| C6 | Interval prior in the backtest table: agent 5 R2.2-2 says "Beta/**Jeffreys** interval on the win-rate"; segment shrinkage here uses floored-MoM Beta(S=10) | different jobs | **Both stand, scoped:** Jeffreys Beta(0.5,0.5) for the single-proportion display in the backtest table (objective, no data-dependent prior); floored-MoM shrinkage only where pooling across segments is the point. Criterion: a prior estimated from the same data it regularizes is fine for shrinkage, wrong for a neutral display interval. |
+| C7 | `posterior_better` prior unspecified in agent 5 ("Beta-Binomial Monte Carlo") | R3.3 here: symmetric `Beta(prior/2, prior/2)` on both arms | Adopt the symmetric prior as spec (verified flip points, R4.4-D). Criterion: a challenger-vs-active comparison must not smuggle in a segment-level prior mean. |
+| C8 | Converged `outcome.json` (agent 5 R3.3) has NO segment/client/canton field, but G6's `segments/<seg>.json` store needs a segment key | schema vs consumer | Segment key = `project_kind` slug from `calc.json project.id` (verified live: `"OBERGLATT_LUEFTUNG_DEMO"` exists) - derivable by the same-folder join at aggregation time, no schema change REQUIRED; agent 5 R3.6 already derives it for training rows. Client/canton posteriors must wait for `_3`'s simap enrichment (see R4.3). Not touched by agent 5's round 4 - still open at schema level (O5). |
+| C9 | (Already-resolved check, re-verified) agent 5 round-1 §6 "switch at n>=10" retired by R2.2-4; version schema `shadow` field dropped from R3.5-1 VFIELDS; round-4 status-chip correction matches the converged machine | annotations in place | Consistent; nothing to do. |
+
+### R4.3 Cross-module contract checks (data needs vs what exists)
+
+**Per-tender fields my procedures consume -> provider status:**
+
+| Field needed by (gate) | `_3` bids.jsonl v1.1 (agent 3 R3.D) | agent 5 outcome.json R3.3 | live `tenders/<id>/` today | Verdict |
+|---|---|---|---|---|
+| outcome won/lost (G2/G3/G4/G6) | `outcome` | `outcome` | **absent** (meta.status: new/pdf_stored/calculated only - server.py L73-82, `_upload` L1085/1092) | `_4` must create it (both reports agree); open F2 |
+| our bid + margin at submission (G2/G5) | `economics.our_bid_chf/our_margin_pct` | `our_bid_chf/margin_pct_submitted` | absent | same |
+| winner + competitor prices (G5/G6) | `economics.award_price_chf/winner` + `n_bidders` (simap) | `winning_bid_chf/competitors[]/n_competitors` | absent | same |
+| timestamps for out-of-time splits (G2) | `tender.submission_date` + `decided_on` | `submitted_at/decided_on/recorded_at` | `created_at` only | fine once outcome.json lands |
+| predicted win prob at submission (G2/G4 - THE backtest/drift input) | `provenance.win_estimate` | `predicted_win_prob` | **absent, capture point undefined** | open F2 in BOTH reports - unchanged, now blocking G2 and G4, not just G2 |
+| segment key (G6) | `tender.client_type/canton` (simap join) | **absent** - derive from `calc.json project.id` (live value verified) | `calc.json project.id` = "OBERGLATT_LUEFTUNG_DEMO" | derivation works; client-level segments blocked on `_3` collector |
+
+**Live-store facts re-pinned today:** `meta.json` = `{id, name, created_at, status, uploaded_file}` exactly (nothing else - no client, no canton, no submitted state); `calc.json` has `project{id,name,currency,source_tender_file}` + `input{mode,positions_file}` - so any "client" attribute is currently impossible to compute from `_4`'s own store. `POST /api/settings/update` still auto-selects at L1007; `_norm_settings` still strips version fields at L132-135 (agent 5 R3.7[F] live proof stands).
+
+**Win-rate posterior vs `_3`'s demo anchors 69/63/49 - the handoff, now specified (was specified nowhere):**
+
+1. The anchors are NOT in server.py (round-4 mandate premise slightly off): they are hardcoded in `static/index.html` L344-348 (`SCENARIOS`, "win % static demo values") and interpolated by `winChance()` L351-363. Agent 3's report pins this correctly.
+2. The posterior does not replace the anchor *shape* (that is the price-sensitivity curve, `_3`'s job); it replaces the *level*: heuristic mode's `P0 = reference_win_probability = 0.55` (params; agent 3 R3.A + R4.A prove `P(R)=0.55` exactly, with R = the UNROUNDED indicative price - which already exists as a live calc.json field, `project_cost.indicative_selling_price_chf` = 589659.84, per its R4.A6). Spec: `P0 := segment-posterior shrunk mean` once the segment store has `n_obs >= 10` (prior weight exactly 50% at n=10 - R4.4-C math); below that keep the param default. Recompute quarterly, not per tender.
+3. Measured effect (R4.4-F2): a segment running 30% raw (6/20) moves P0 0.55 -> 0.383; running 60% (12/20) -> 0.583. The 90% CrI is the honest display band until `_3`'s Venn-Abers bands exist (agent 3 R2.E1); agent 3's v1 keeps the +-0.05 knobs - CrI and knobs must not be summed (double-counting uncertainty); CrI wins once n_obs>=10. Open decision for agent 3's round 5 (O2; its round 4 did not address it).
+4. Golden-anchor pseudo-count check (mandate item): anchors as `Beta(p*S,(1-p)*S)` priors give Beta(6.9,3.1)/Beta(6.3,3.7)/Beta(4.9,5.1) - 90% CrI widths 0.455/0.477/0.495, i.e. each demo anchor is worth exactly S=10 pseudo-observations (the house prior strength); after 10 real outcomes at Target the posterior is a 50/50 anchor/data blend (3W/7L -> 0.465). Conclusion: they are weak priors, safe to keep as the cold-start P0 until data speaks - no contradiction with (2).
+
+**Competitor "Beta posterior" semantics (found while wiring G6):** agent 3 expects feature `competitor_median_delta_pct` (a signed price delta) "from `_4` observations (Beta posterior)" (R3.E) and agent 5 R2.5 says "Beta posterior ... as the served prior" - but a Beta models a *rate*, not a signed percentage. A Beta posterior on `P(competitor cheaper than us)` (win-against indicator, binomial - correct) coexists with the rolling median delta (descriptive - correct). Fix for both siblings: `observations/competitor_<slug>.json` stores BOTH `{n, median_delta_pct, last_delta_pct}` (feeds agent 3's feature verbatim - its round-4 D table marks the feature "NOT DAY-1, deferred", consistent with the inspection-only channel) and `{alpha, beta}` on the cheaper-than-us indicator (feeds prompts / hint cards). Agent 3's R3.E feature-table wording ("Beta posterior" as source of a median delta) and agent 5's R2.5 phrasing should stop calling the delta itself a Beta posterior.
+
+**Agent 3's strict-improvement gate STILL not fixed (re-flagged; verified against its round-4 text, which landed mid-round):** agent 3 round-2 D3-3 retains "promote only if held-out Brier improves" and neither round 3 nor round 4 touches it - the non-inferiority conflict flagged in R3.7 here remains open on `_3`'s side (its round-4 G.4 lists `_4`-owned prerequisites but not this gate). Concrete failing case (re-verified R4.4-E): challenger Brier 0.1694 vs active 0.1670 at n=14 passes `<= +0.02`, fails "improves". `_3`'s candidate filter and `_4`'s registry gate will disagree on exactly this case until agent 3 adopts `GATE_BRIER_MARGIN=0.02` / `GATE_BACKTEST_MIN_N=10` verbatim. Open item O1.
+
+### R4.4 Executed validation (exact numbers; scripts in /tmp, seeds recorded)
+
+**A-C. Beta-Binomial re-verification (`/tmp/r4_verify.py`, Python 3.13.2, stdlib):**
+
+- R3.1 table reproduces (means exact, CrIs within MC noise): 1/1 -> 0.364 [0.151, 0.606]; 3/5 -> 0.400 [0.207, 0.609]; 12/20 -> 0.500 [0.352, 0.647]; 60/100 -> 0.573 [0.495, 0.649] (S=10, pooled m=0.30; R3.1 printed [0.150, 0.605] etc.); S=30 column 0.323/0.343/0.420/0.531 - all match R3.1. **PASS**
+- MoM trap re-proven on the exact R3 toy segments [(1,1),(0,1),(2,8),(3,3),(2,9),(1,8)]: pooled 9/30=0.300, MoM strength **0.4682** (claimed 0.4682), unfloored 1/1 -> **0.8191** (claimed 0.819); all-binary degeneracy gives strength **exactly 0.000000** -> `floored_prior` branches to S=10 default. **PASS**
+- Golden anchors as pseudo-count priors (new): see R4.3-4 numbers (Beta(6.9,3.1)/Beta(6.3,3.7)/Beta(4.9,5.1); CrI widths 0.455/0.477/0.495; Target blend table: 5 straight losses -> 0.420; 3W/7L -> 0.465; 12W/18L -> 0.458). **EXECUTED**
+
+**D. G3 flip points (`posterior_better`, symmetric Beta(5,5), 100k draws, seed 42):** active 12/30 vs challenger 16/17/18/19-of-30 -> P(better) = 0.817 / **0.872** / **0.914** / 0.943 (R3.3 claimed 0.871 / 0.913 - within MC noise); 7/10 vs 12/30 -> **0.905** (claimed 0.904). Auto-flip threshold 0.90 crossed exactly at 18/30 (+20pp). **PASS**
+
+**E. Gate boundaries:** G1 0.8500@n=52 PASS / 0.8499 FAIL / 0.86@n=40 FAIL (strict tier) / floor-breach FAIL; G2 0.1694@n=14 PASS / 0.1870 boundary PASS / 0.1871 FAIL / 0.1694@n=9 FAIL (min-n). All eight reproduce R3.3 exactly. **PASS**
+
+**F. Page-Hinkley Monte Carlo, corrected zero-mean stream `e = p_pred - y`, 1000 reps (`/tmp/r4_ph_mc.py`, `/tmp/r4_ph_age.py`):**
+
+| metric | R3.2 claim (3-10 seeds, biased stream) | R4 (1000 reps, corrected stream) |
+|---|---|---|
+| 30pp collapse (0.55->0.25 @ t=50, thr=8) | detected 10/10; delay median 12.5, mean 19.9 | detected **961/1000 (96.1%)**; delay median **23.0**, mean 24.9 |
+| 15pp drift (0.55->0.40), thr=8 | median 34 | detected 691/1000; median **36** (close - PASS) |
+| pre-change FAs in drift runs (50 pts, thr=8) | 0 | **2.8%** of runs (28/1000) |
+| stationary 120-pt windows (thr=8) | "0 alarms" (10 controls) | **38.1%** of runs contain >=1 alarm - the 0-in-10 was luck (p ~= 0.008 if the true rate were zero) |
+| stationary long-run (thr=8) | 42/8000 = 1/190 | **1105/200000 = 1/181** (matches - PASS) |
+| threshold sweep long-run | 1/267 @10, 1/471 @12 | **1/292 @10, 1/451 @12** (matches within noise) |
+| min_instances effect @thr=8 | "irrelevant" | identical at mi 8/10/15/30: median delay 22, 290/300 detected - **confirmed** |
+
+New facts the re-run forced: (i) **FA hazard is detector-AGE-dependent** - 82% of stable-window false alarms land at t>=60, only 8% before t=50 (deciles 51/85/112); that is why pre-change windows look clean while long horizons accumulate 1/181. (ii) **PH detects changes, not levels**: fed only the post-change stream (constant +0.30 bias, no history) it fires 17/300 - so a model that is mis-calibrated from day one is invisible to PH; the rolling calibration *plot* (section 5 row 4) is the level check and the two are complements, not alternatives. (iii) Delay 23 pts at 1-5 decided/month = **5-23 months calendar** - acceptable for a review-cost tripwire, useless as early warning (C5 resolution). Constants unchanged: thr=8 remains the right operating point (96% power / 1/181 FA); the *claims* about it were corrected, not the value.
+
+**G. External live checks:** river PH source re-fetched 200 (`https://raw.githubusercontent.com/online-ml/river/main/river/drift/page_hinkley.py`, 127 lines, defaults `min_instances=30, delta=0.005, threshold=50.0, alpha=1-0.0001` - unchanged, our port basis stands). SearxNG engines responsive again (first working round since round 1; spot query returned live results). No scipy needed: every number above is `random.betavariate` + arithmetic. **PASS**
+
+### R4.5 Corrections applied in place this round
+
+1. Round-1 §5 PH row + R3.2 stream prose: error formula `1-p`/`-p` -> `p_pred - outcome` (zero-mean iff calibrated); R3.2 delay/FA numbers annotated as superseded by R4.4-F.
+2. R2.3 conclusion: "pad the stream with interim calibration checks" struck (undecided tenders have no error point); weekly-cadence premise flagged; min_instances note updated.
+3. R2.4: CrI level standardized on 90% (was 95% there, 90% in R3); seeded-draws reproducibility trap documented.
+4. R3.5 `PH_THRESHOLD` comment + R3.6 surprise #3 + R3.2 consequence line: corrected FA/delay numbers and calendar-time honesty (1-5 outcomes/month).
+
+### R4.6 Remaining open questions (for round 5 / implementation)
+
+- **O1:** agent 3 must adopt the non-inferiority Brier gate (numbers above) or the two modules' promotion logic diverges on challengers within +0.02 Brier. Its round 4 (landed mid-round, re-read) still retains the strict-improvement wording - carried to round 5.
+- **O2:** agent 3 decision: replace the +-0.05 min/max knobs with the segment-posterior 90% CrI at `n_obs>=10` (my recommendation, avoids double-counting uncertainty) - currently unspecified on `_3`'s side.
+- **O3:** `predicted_win_prob` capture point at submission (open F2, both modules) - now blocks G2 AND G4; the smallest viable version is a `win_estimate` field written by `_3`'s `predict.py` into the tender folder at submission time.
+- **O4:** `catalog_auto_apply_delta_pct` value (agent 5 R3.1 lists the key, no number) - propose 1.0 pct floor; product-owner confirmation.
+- **O5:** client/canton provenance for client-level segments - blocked until `_3`'s simap enrichment joins on `source_refs`; until then segments are project_kind only (coarse but computable today).
+- **O6:** agent 5 round 5 deltas (his round 4 landed mid-round and absorbed the PH gate): (a) fix the `drift_monitor` stream formula to `e = p_pred - outcome` (C1b - his docstring currently carries the proven-wrong orientation), (b) refresh the quoted operating numbers to 1/181 FA / median-23 delay / 96.1% power, (c) wire the drift-triggered retrain recommendation (`provenance.trigger="drift"` on the next step4 run) and the rollback-review hint - currently the alarm only logs and surfaces.

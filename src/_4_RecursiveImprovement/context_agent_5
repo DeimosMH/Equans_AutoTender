@@ -394,7 +394,7 @@ mints `t{yyyymmdd_HHMMSS}_{4hex}` and `status: "new"`. Observed layouts:
 meta.json only. Status machine verified: `new` (L79) -> `pdf_stored` on pdf
 upload (L1092) / `calculated` on csv upload which triggers the full pipeline
 (L1085) or after manual value edits (L281). `DELETE /api/tenders/<id>` exists
-(L1051-1059). No submitted/won/lost states exist - my round-1 extension list
+(L1056-1065 - ref corrected in Round 4). No submitted/won/lost states exist - my round-1 extension list
 ("existing: new, pdf_stored, calculated") is exactly right.
 
 **calc.json - every field my "why" factor table depends on exists.**
@@ -523,6 +523,11 @@ trigger framework; Cradl AI low-confidence routing; Domo approve/deny gate):
 Concrete settings-page design (extends the existing version list UI):
 - Each version row gains a status chip: `staged -> evaluating -> shadow ->
   active`, plus `rejected` / `rolled_back`; legacy rows normalize to `active`.
+  [Round 4 correction: the chip set must follow the CONVERGED machine of
+  R2.5/R2.6 instead - `staged -> candidate -> active`, plus `rejected` /
+  `retired`; "evaluating"/"shadow"/"rolled_back" above are the pre-convergence
+  round-1 names. Shadow survives only as the optional candidate-stage dual-run
+  flag for input_processing; rollback = promote an older seq.]
 - The shadow row shows "Compare (n outcomes)" -> the side-by-side table above.
 - "Promote" button is enabled only after the golden-set eval passed; clicking
   writes `promoted_at/by`; "Keep champion" opens a one-line reason box.
@@ -653,9 +658,14 @@ single pure-Python dep) IF post-mortem sections multiply past ~4 - not for v1.
 ```
 src/_4_RecursiveImprovement/
 ├── todo, readme.md          # module doc, _2_Calculator style
-├── settings.yaml            # golden_floor, backtest_margin 0.02, min_decided 30,
-│                            #   auto_promote_posterior 0.9, beta_pseudo_counts 10
-│                            #   (floor 5, cap 30), catalog_auto_apply_delta_pct
+├── settings.yaml            # ALL gate/monitor constants, one canonical list
+│                            #   (sibling R3.5 values, Round 4 completion):
+│                            #   golden min_n 50 / margin 0.02 / example floor 0.50
+│                            #   (n<50 -> strict >= champion), backtest min_n 10 /
+│                            #   Brier margin 0.02, auto-promote n>=30 AND
+│                            #   posterior 0.90, prior strength 10 (floor 5, cap 30),
+│                            #   PH {min_instances 10, delta 0.005, threshold 8.0,
+│                            #   alpha 0.9999}, catalog_auto_apply_delta_pct
 ├── common.py                # BASE, D/r2, loaders, sha256, ceil1000, env redirects
 ├── step1_outcome.py         # -> tenders/<id>/outcome.json
 ├── step2_why.py             # -> tenders/<id>/analysis.json
@@ -687,7 +697,12 @@ Per-tender artifacts (web_ui store, gitignored): `outcome.json`, `analysis.json`
 #   gap_decomposition(calc,outcome,margins); scenario_gap(calc,outcome,margins);
 #   analyse(tdir)  (writes analysis.json)
 # step3_observe.py: competitor_stats(outcomes,aliases)  (rolling + Beta posterior);
-#   catalog_mismatches(outcome,calc)  (pending/applied queue)
+#   catalog_mismatches(outcome,calc)  (pending/applied queue);
+#   drift_monitor(outcomes)  (Page-Hinkley on the RAW per-tender error stream
+#     p_pred - outcome (outcome 1=won/0=lost, i.e. p if lost / p-1 if won —
+#     NOT the 1-p/-p form, mean -0.10 under calibration, agent 6 R4 C1b),
+#     constants above; alarm -> calibration review + feedback_log.jsonl
+#     entry, NEVER an automatic version flip)  [Round 4]
 # step4_feedback.py: training_row(calc,outcome,analysis,obs);
 #   emit_jsonl(rows,task)  (-> src/web_ui/uploads/lora_data/);
 #   register_version(task,data_file,provenance)  (POSTs /api/settings/update);
@@ -702,7 +717,11 @@ Per-tender artifacts (web_ui store, gitignored): `outcome.json`, `analysis.json`
 {"schema_version": "1.0", "tender_id": "t20261010_143121_4c08",
  "recorded_at": "2026-11-06T09:12:00", "outcome": "lost",  // won|lost|withdrawn|no_bid
  "decided_on": "2026-11-05", "submitted_at": "2026-10-12",
- "our_bid_chf": 589659.84, "submitted_scenario": "Target", "margin_pct_submitted": 5.5,
+ "our_bid_chf": 589659.84, "submitted_scenario": "indicative_default",
+ // R4 fix: 589659.84 = baseline/(1-5.5%) is the DEFAULT-margin indicative
+ // (target_margin_pct), NOT the "Target" preset (4.0% -> 581000). Enum:
+ // Aggressive|Target|Conservative|indicative_default|custom
+ "margin_pct_submitted": 5.5,
  "winning_bid_chf": 541200.00, "winner": "Competitor AG", "n_competitors": 4,
  "price_position_pct": 8.95,   // (our-winner)/winner*100, Decimal r2
  "bid_ratio": 1.0895,          // our/winning (derived, Friedman input)
@@ -792,6 +811,11 @@ material; `transport_equipment_chf` = 2.5% of positions direct (params
    `{task, seq, scores: {golden?, backtest?}}` -> write `v["eval"]` + history
    `gate_passed|gate_failed`; `staged -> candidate` on pass, `-> rejected` on
    fail. Trainer runs remotely; only the RESULT is POSTed (open R2.7-3).
+   [Round 4: UNIFIED with sibling's gate-running variant into ONE endpoint
+   `POST /api/settings/evaluate` `{task, seq, scores?}` - with `scores` it
+   records the external trainer's result; without, it runs the server-side
+   gates (golden + Brier backtest need no adapter present). Same transitions
+   either way - see Round 4 R4.2 row 2.]
 6. **New `POST /api/tenders/<id>/outcome`** (after "rename" L1035): step1's
    `validate_outcome`+`compute_derived` in-process (import like calc_common),
    write `tenders/<id>/outcome.json`; meta.status `calculated -> submitted` on
@@ -817,7 +841,7 @@ project_kind slug from `calc.project.id`):
  "features": {"price_position_pct": 8.95, "bid_ratio": 1.0895, "n_positions": 22,
   "supplier_share_direct_cost": 0.7278, "weighted_match_confidence": 0.7744,
   "review_cost_share": 0.7278, "material_share": 0.7449, "labour_share": 0.2551,
-  "services_share": 0.2253, "margin_pct": 5.5, "scenario": "Target",
+  "services_share": 0.2253, "margin_pct": 5.5, "scenario": "indicative_default",
   "competitor_medians": {"Competitor AG": 9.8}, "project_kind": "school_ventilation"},
  "models_used": {"win_ratio": null, "input_processing": "2026-10-10"},
  "recorded_at": "2026-11-06T09:12:00"}
@@ -871,6 +895,10 @@ Real `calc.json` of `t20261010_143121_4c08` (22 positions; synthetic winner
   once `_1` step5_match.py ships real scores + `pipeline_report.json` (rows
   confirmed/rejected, match distribution), `match_quality.source` flips to
   `"_1_real"` and the report's data-gap section prints extraction quality.
+  [Round 4: the flip has a SECOND unimplemented hop - `_2`'s step1_material.py
+  L55 hardcodes the placeholder and never reads a csv `match_score`; the flip
+  additionally requires agent-1's R3.8 `_2` patch. Full chain in Round 4
+  R4.3a; nothing in _4 v1 is blocked by it.]
   Agent-1 nuance adopted: a supplier-quote row KEEPS its suggested_product_id
   (a match at lower confidence) - `supplier_share` measures quote-risk, NOT
   match failure; attribution separates them via `weighted_match_confidence`
@@ -916,3 +944,236 @@ appended to `output/reports_index.json` (R1 schema + loss_reason, models_used).
    leaves localhost.
 7. `seq` migration for live collision ids ("2026-10-10 15:21"/"15:22") -
    R3.5-1 covers it; UI dropdown must render seq+version immediately.
+
+## Round 4 - logical analysis, cross-report consistency, validation
+
+- Date: 2026-10-10 (round 4). Method: full re-read of this blueprint + sibling
+  `context_agent_6` + agents 1 and 3 (round-3 state), then line-level checks
+  against live `server.py` (1117 l), `_2_Calculator` step1/common/step4/
+  validate, live `ui_settings.json`, the 3 live tender stores, and the golden
+  `materials/expected_output_example.json`. Three executed checks (R4.4).
+  SearxNG probed once: up, wikipedia engine only (general engines unusable a
+  4th round); no external facts were needed - everything below is
+  local-execution verified. In-place corrections this round are marked
+  `[Round 4 ...]` at the stale spots.
+
+### R4.1 Internal consistency audit (own document)
+
+**Constants/thresholds quoted in multiple sections - ALL AGREE.** R2.2's
+auto-promote (n>=30 AND posterior>0.9) == R3.6's gate text == R3.1
+settings.yaml; Brier margin 0.02 at n>=10 (R3.6) == sibling's
+GATE_BRIER_MARGIN/GATE_BACKTEST_MIN_N; beta pseudo-counts 10/5/30 ==
+sibling's PRIOR_STRENGTH set; R3.4 pseudocode values == R3.7 executed values
+(re-executed exactly, R4.4[A]). Two under-specifications fixed in place:
+(1) the R3.1 settings.yaml sketch omitted the golden-gate tiers and the whole
+Page-Hinkley block - drift monitoring is this module's integration duty and
+had no home in the blueprint; both added (canonical values = sibling R3.5).
+(2) R3.2's step3_observe had no drift entry point - `drift_monitor(outcomes)`
+added.
+
+**Stale content found and fixed in place:**
+1. R2.4 status chips still showed the pre-convergence 4-state machine
+   (`staged -> evaluating -> shadow -> active`, `rolled_back`) - corrected to
+   the R2.5-converged set (`staged -> candidate -> active`, `rejected`/
+   `retired`).
+2. R3.3/R3.6 labeled the 589659.84 bid (default margin 5.5%) with scenario
+   "Target" - but the Target preset is 4.0% -> 581000. `submitted_scenario`
+   gains the enum value `indicative_default`; both spots fixed.
+3. R3.8's `_1` flip claimed a one-hop dependency; it has two (see R4.3a).
+4. R2.1's DELETE line ref was off by 5 lines (L1056-1065 today).
+5. Everything else re-checked EXACT against today's code: update handler
+   L994-1009 (append L1006, auto-select L1007), `_norm_settings` strip
+   L132-135 + first-matching-base fallback L137-138, save flow L199-214,
+   run_steps L217-227, painters L530/L674/L778, `Page` L370, palette L294-297,
+   rename L1027-1035, upload statuses L1085/L1092, plain settings POST
+   L1024-1026. `ui_settings.json` unchanged since round 3 (win_ratio.selected
+   still null; collision ids 15:21/15:22 still present; productivity selected
+   15:21). Tender store unchanged: 3 tenders, tender.pdf in exactly 1 of 3.
+
+**NEW executed finding - the dual-baseline trap.** calc.json carries TWO
+baselines by design (step4_project.py L37-41 subset, L42-72 project; scope
+note L61-64): `example_subset_summary.cost_baseline_chf` = 414489.12 =
+direct x 1.025 (transport) x 1.085 (OH) - deliberately EXCLUDES the 115700.00
+one-off services, mirrors the golden subset; `project_cost.cost_baseline_chf`
+= 557228.55 = positions + services + allowances 25174.58 + OH 43653.85 - the
+real bid basis. The golden `recommended_bid_range` (426000/432000/444000,
+win 0.69/0.63/0.49) derives from the SUBSET baseline - re-derived exactly by
+execution (R4.4[A]). Demonstrated consequence: with the SAME 22 positions and
+the same synthetic winner 541200, decomposition on the project baseline says
+floor 558000 > winner -> structural loss (our indicative bid 589659.84,
+G +8.95%), while on the subset baseline the Target bid 432000 sits 20.18%
+BELOW the winner - "we won". RULE ADOPTED: `_4` step2_why decomposes on
+`project_cost` ONLY (a submitted bid must cover services);
+`example_subset_summary` is validate.py-only. This also reconciles the
+project-context mismatch between "baseline 414489.12" (golden) and this
+report's 557228.55 figures: both correct, different scopes. Agent 3's
+R2.B/F2 rule (predict on project baseline; validate reproduces golden on
+subset) is the matching _3-side decision - but agent 3's own R3.F wincurve
+example still shows 414489.12 (R4.2 row 5).
+
+Minor arithmetic nuance recorded: sum of the 22 per-position
+direct_position_cost_chf = 372700.11 while material 277626.29 + labour
+95073.83 = 372700.12 (independent 2dp rounding; validate.py TOL 0.011 absorbs
+it). Denominator choice changes no reported ratio at 2dp (supplier share
+72.78% either way); step2_why keeps using the stored
+`positions_direct_cost_chf` total (372700.12).
+
+### R4.2 Contradiction matrix vs sibling (agent 6) and agent 3 + resolutions
+
+| # | Topic | This report | Other report | Resolution |
+|---|---|---|---|---|
+| 1 | Version state names | R2.5/R3.5: staged -> candidate -> active, rejected/retired | sibling R2.6 identical; my R2.4 chips were stale | R2.4 corrected in place; converged names stand |
+| 2 | Eval endpoint | R3.5-5 `POST .../evaluated` = records external scores (callback) | sibling R2.6-4 `POST .../evaluate` = runs the gates | UNIFY into ONE endpoint `POST /api/settings/evaluate {task, seq, scores?}`: with `scores` -> record external trainer result; without -> run server-side gates (golden + Brier backtest need no adapter on this machine). Identical transitions; R3.5-5 annotated. OPEN: sibling/agent 3 confirm the optional-scores shape |
+| 3 | Promote key | R3.5-4 `{task, seq, note}` | sibling R2.6-5 `{task, version, note}` | accept both, seq canonical - collision ids ("2026-10-10 15:21") make version ids ambiguous (both reports' own finding); tie-break: int seq if present, else version lookup |
+| 4 | Golden-gate tiers | absent from this body (sibling domain) | sibling R2.5 "n<30 strict" superseded by its own R3.3 2-tier (n>=50 margin / n<50 strict) | canonical = sibling R3.3; my settings.yaml sketch now carries it |
+| 5 | Wincurve baseline | decomposition on project_cost 557228.55 | agent 3 R3.F example: 414489.12 "recomputed like index.html l.634" | agent 3's example contradicts its own R2.B recommendation AND the browser code: index.html (~l.633) reads `calc.project_cost.services_chf.total_chf` -> live baseline is 557228.55. Resolution: project baseline for anything served; subset baseline validate-only. Flagged for agent 3's round 4 |
+| 6 | Decomposition bid basis | R3.4: our_bid = indicative (5.5% -> 589659.84; margin stage 32431.29) | sibling R3.4: submitted = Target preset (4.0% -> 581000; margin stage 23771.45) | not a contradiction, an unpinned parameter: `outcome.our_bid_chf` (the price actually submitted) is canonical; calc indicative is the pre-outcome fallback. Agent 6's "coverage ratio" (contingency + 10% budget error = 207% of the gap) is complementary and should be printed by step2_why too |
+| 7 | Where version state lives | R2.5/R3.5-1: inside ui_settings version dicts via `_norm_settings` allow-list patch | agent 3 R3.H(e): "model state lives in _3's metrics.json sidecar, never in ui_settings version dicts" | split by data class: the state machine (status/seq/history/selected) MUST be in ui_settings - the /promote endpoint and settings UI are its consumers, one write path; heavy per-version artifacts (metrics.json, calibration tables, shadow diffs) stay in module sidecars. Agent 3's "never" is right for _3's metrics, wrong for status. Both R3.5-1's patch and sidecars are needed; neither alone suffices |
+| 8 | PH alarm action | (not previously wired here) | sibling R3.2: alarm -> calibration review ONLY, never auto-flip (~1 false alarm / 190 pts at thr=8) | adopted verbatim into drift_monitor (R3.2 addition): alarm appends a feedback_log record + surfaces in the report; version flips go through /promote gates only |
+
+### R4.3 Contract checks vs actual code (file:line)
+
+**a) The "real match_score from _1" enabler - corrected.** The phrase "single
+blocking enabler" does NOT occur in this file (grep: 0 hits for
+blocking/enabler/match_score) - as relayed, the claim is overstated. Verified
+chain TODAY:
+- `_2_Calculator/step1_material.py` L55: `"match_confidence":
+  MATCH_CONFIDENCE[product["source_type"]]` - placeholder map at
+  `_2_Calculator/common.py` L30 (0.92/0.72; comment L28-29: "reuse until _1
+  ... provides a real matcher score"). A csv `match_score` column is NOT read,
+  and an empty `suggested_product_id` KeyErrors at L41 (dict access).
+- calc.json DOES carry match_confidence per position (0.92x16 / 0.72x6,
+  golden == live).
+- `src/web_ui/server.py`: match_confidence occurs ZERO times (grep).
+  `_offer_data` (L431-527) and all three table renderers branch on
+  `review_required` only (L467, L651, L741-742, L841-842) - the web UI never
+  displays or consumes match_confidence.
+- Contracts promised elsewhere: agent 1 R3.4 (csv `match_score` column +
+  `tender_lv_output.json` real `match_confidence`, top-3 `match_candidates`),
+  R3.8 (the `_2` patch preferring csv match_score), R3.9 ("the R3.8 patch is
+  the single blocking integration item" - for _1<->_2). Agent 2's report
+  promises nothing on match scores (grep: 0 hits).
+CORRECTED POSITION: real match_score is the highest-value INPUT _4 receives
+from _1 - it separates "match failure" from "quote risk" in attribution - but
+it BLOCKS NOTHING in _4 v1: every round-3 executed number stands on the
+placeholders. The chain to a real score in calc.json has THREE unimplemented
+hops: _1 step5_match (module not started) -> _2 step1 patch (not written) ->
+optional web_ui display (zero consumption today). The single blocking item for
+_1->_2 composition is the _2 patch (KeyError on unmatched rows would break
+prod mode); the single _4-OWNED prerequisite for any versioned workflow is the
+`_norm_settings` allow-list patch (R3.5-1, re-proven R4.4[C]).
+
+**b) Route inventory (executed, R4.4[B]) and blueprint->endpoint mapping.**
+server.py serves exactly 15 routes today. GET: `/`, `/api/tenders`,
+`/api/settings`, `/api/tenders/<id>`, `/api/tenders/<id>/download`,
+`/api/tenders/<id>/pdf`; POST: `/api/tenders`, `/api/settings/update`,
+`/api/settings/upload-data`, `/api/settings` (generic),
+`/api/tenders/<id>/{rename,upload,recalc,values}`; DELETE:
+`/api/tenders/<id>`. Blueprint mapping:
+
+| Blueprint interaction | Endpoint | Status (evidence) |
+|---|---|---|
+| step1 record outcome | POST /api/tenders/<id>/outcome | MISSING - additive slot: len-4 POST branch after "values" (L1045-1048); R3.5-6 said "after rename L1035" - both same dispatch chain |
+| read analysis | GET /api/tenders/<id>/analysis | MISSING - additive slot next to download/pdf (L938-980) |
+| postmortem download | GET /api/tenders/<id>/postmortem | MISSING - same slot |
+| observation hint cards | GET /api/observations | MISSING - new parts[:2] branch before the 404 else |
+| register version (single write path) | POST /api/settings/update | EXISTS (L994-1009) but auto-selects (L1007) and normalizer strips/fallbacks (L132-138) - R3.5-1/2 patches are prerequisites |
+| promote / rollback | POST /api/settings/promote | MISSING - additive slot next to update/upload-data (len-3 settings POSTs) |
+| eval callback / gate run | POST /api/settings/evaluate | MISSING - same slot; shape per R4.2 row 2 |
+| training-JSONL landing | POST /api/settings/upload-data | EXISTS (L1010-1023); `src/web_ui/uploads/lora_data/` exists (empty); step4's emit naming matches L1022 `{task}_{%Y%m%d_%H%M%S}_{name}` |
+| interim manual model switch | POST /api/settings (generic) | EXISTS (L1024-1026); save flow keeps stored versions when client sends none (L204-206) - the interim rollback lever stands |
+| step1-3 subprocess per tender | none (env pattern) | run_steps (L217-227) / calc_tender (L230-238) reusable as-is with cwd=module dir + AUTOTENDER_TENDER_DIR |
+| meta.status gains submitted/won/lost | data, not route | current statuses set at L79 (new), L1092 (pdf_stored), L1085 (calculated); no outcome states exist - as designed |
+
+No collisions with other modules' planned routes (agent 1's
+POST /api/tenders/<id>/process + GET .../input_processing; agent 3's GET
+.../wincurve) - all additive in the same len-4 dispatch slots.
+
+**c) LoRA update workflow vs the settings store - implementable, ONE
+load-bearing ordering constraint.** Re-proven on the live code (R4.4[C]):
+appending a rich staged version to win_ratio and normalizing returns
+`{"version","base"}` only (status/seq/created_at/data_files/eval all
+stripped), AND `selected` silently flips null -> the new version via the
+L137-138 first-matching-base fallback ALONE (L1007 not involved). Therefore
+R3.5's patch order is mandatory: (1) `_norm_settings` allow-list +
+status-aware selection FIRST; (2) only then delete L1007 and register staged
+versions. Reversed, every registration window auto-selects an unevaluated
+version AND destroys its gating state. With the patch in place the workflow
+emission -> register (staged) -> evaluate -> promote is implementable against
+today's endpoints + the two new ones; nothing else in the settings store
+blocks it (upload dir, naming, generic-save rollback all verified above).
+
+### R4.4 EXECUTION evidence (scripts: /tmp/r4_loss_attribution.py, /tmp/r4_routes_norm.py)
+
+- **[A] Loss attribution on the GOLDEN data - PASS.** 22 positions
+  (catalog 16 / supplier 6); supplier direct 271261.31 of 372700.12 =
+  **72.78%** (72.7827% at 4dp) - the round-3 headline reproduces on
+  `materials/expected_output_example.json`, and the live tender is identical
+  to within the 1-cent rounding nuance (R4.1). Weighted match_confidence
+  **0.7744** vs unweighted 0.8655; 72.78% of direct cost under confidence<0.8;
+  material 74.49% / labour 25.51%; 6 review_required rows. Gap decomposition
+  (project baseline 557228.55, synthetic winner 541200.00): G = 48459.84 =
+  8.95% of winner = margin stage 32431.29 (5.99%) + cost stage 16028.55
+  (2.96%); zero-margin floor 558000 (3.10% above winner); scenario ladder
+  572000 / 581000 / 596000 (gaps +5.69 / +7.35 / +10.13%); quotes 5% under
+  budget -> floor 544000, gap +0.52%; 10% -> floor 531000 = -1.88% BELOW
+  winner; break-even quote delta 5.91%. Every R3.7[D] number reproduced.
+  Golden scope check: subset bids 426000/432000/444000 re-derived exactly
+  from 414489.12 (and 414489.12 = direct x 1.025 x 1.085 exactly).
+- **[B] Route inventory - PASS.** 15 routes enumerated from the live
+  dispatch code; all six blueprint endpoints absent; all slots additive
+  (R4.3b table).
+- **[C] `_norm_settings` strip + silent auto-select - PASS (still true).**
+  Live-code import, in-memory payload only (nothing written): a rich staged
+  version returns as `{'version','base'}`; `selected` flips null ->
+  '2026-11-01' via the first-matching-base fallback alone. On-disk
+  `ui_settings.json` untouched and unchanged since round 3.
+
+### R4.5 Buildable TODAY vs blocked (dependency ordering)
+
+Buildable with existing code, in this order:
+1. `_norm_settings` allow-list + status-aware selection (R3.5-1/2), then
+   delete-L1007 + `register_lora_version` + /promote + /evaluate (R3.5-3/4/5)
+   - pure server.py edits, zero module dependencies. MUST precede any real
+   registration (R4.3c).
+2. step1_outcome + POST /api/tenders/<id>/outcome - needs only meta.json +
+   calc.json (present in 2 of 3 live tenders) + status transitions.
+3. step2_why, step5_report (md/html via extracted painters), GET
+   analysis/postmortem - all computed over existing calc.json; placeholder
+   match_confidence sufficient (proven by R4.4[A]).
+4. step3_observe competitor stats + drift_monitor - live from the first
+   recorded outcome (PH warm-up 10 points, threshold 8.0).
+5. Training-JSONL emission into `src/web_ui/uploads/lora_data/` - directory,
+   naming and generic-save rollback all exist today.
+Blocked / gated (dependency named):
+6. Brier backtest gate - blocked until `predicted_win_prob` is captured at
+   submission (needs _3's predict.py; NOTE: the HEURISTIC curve's P is
+   backtestable - no LoRA needed, so this unblocks as soon as _3 step 1
+   ships) + n>=10 decided tenders.
+7. Golden gates - blocked on curated golden sets per task (largest manual
+   item; unchanged from R3.10-1).
+8. Auto-promote - dead by design until n>=30 AND posterior>0.90 (~+20pp edge
+   at n=30 per sibling R3.3); human /promote is the normal path.
+9. Real match_score attribution (`source: "_1_real"`) - blocked on _1
+   step5_match AND the _2 step1 patch (two module hops; R4.3a).
+10. Catalog-mismatch queue - blocked on an awarded-items comparison source
+    (unchanged); competitor alias map buildable any time.
+11. `fetch_award` scraper - simap.ch structure still unverified (4th round);
+    manual entry stays first.
+
+### R4.6 Remaining open questions (round-4 delta)
+
+1. `/evaluate` unified shape (optional `scores`) - confirm sibling + agent 3
+   adopt the same semantics (R4.2 row 2).
+2. `submitted_scenario` enum values now include `indicative_default` and
+   `custom`; confirm preset names are read from params `scenario_names`
+   rather than hardcoded.
+3. Baseline-scope rule (project_cost for serving/attribution; subset for
+   validate) should be written into _3's predict.py docstring - agent 3's
+   R3.F example needs the same correction (R4.2 row 5).
+4. Should web_ui ever DISPLAY match_confidence (zero consumption today), or
+   does review routing stay on `review_required` alone? UI decision, not
+   blocking; would also resolve whether the 0.55-0.85 gray-zone chips and the
+   supplier-quote chips need distinct styling.
+5. PH threshold 8.0 is justified against a synthetic 30pp collapse; revisit
+   when >=20 real error points exist (sibling R2.7-4, unchanged).

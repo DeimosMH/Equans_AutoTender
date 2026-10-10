@@ -1,7 +1,8 @@
 # Context Agent 2 - Technology & Tooling Research
 
-- **Date:** 2026-10-10 (round 2 doc-verification + round 3 live-execution validation same day —
-  see `## Round 2 - verification & changes` and `## Round 3 - execution validation`)
+- **Date:** 2026-10-10 (rounds 2-4 same day: doc-verification, live-execution validation, and
+  round 4 logical analysis + full 22-position reproduction — see `## Round 2`, `## Round 3`,
+  `## Round 4`)
 - **Module:** `src/_1_AI_InputProcessing`
 - **Agent:** 2 of 6
 - **Angle:** concrete libraries, models and techniques with trade-offs (not architecture)
@@ -10,9 +11,12 @@
   API, raw READMEs, HuggingFace model API + model cards, arxiv title pages); exact sources listed
   in the Round 2 section. Round 3: the recommended tools were **installed and actually run**
   against the real materials (pypdf split, pdfplumber table strategies, rapidfuzz matching,
-  inference-stack probe, SearxNG probe); commands + outputs in the Round 3 section.
+  inference-stack probe, SearxNG probe); commands + outputs in the Round 3 section. Round 4:
+  all 22 golden positions reproduced (not just 6), downstream contracts re-verified against
+  `_2_Calculator`/`web_ui` code, contradictions vs `context_agent_1` resolved by execution.
 - **Evidence markers:** **[EXEC]** = validated by running it on this machine against the real
-  materials (Round 3); **[DOCS]** = documentation/primary-source verified only.
+  materials (Round 3; **[EXEC r4]** = re-validated on the full 22-position golden set in Round
+  4); **[DOCS]** = documentation/primary-source verified only.
 
 ## Ground truth about the input (drives every choice)
 
@@ -22,8 +26,9 @@
   plus `Seite 10 / 20` (i.e. per-system page numbering). **No OCR needed**; borderless-table
   extraction and header-based sectioning are the real problems.
 - Output targets: `example_lv_positions.csv` schema (12 cols, English descriptions, DN/WxH
-  dimensions, manufacturer hints) and `catalog.csv` (r3-exec-counted: **56 product rows**, 5 distinct
-  categories of matching key: category, manufacturer, model, dimension-string, install_code).
+  dimensions, manufacturer hints) and `catalog.csv` (r3-exec-counted, r4-reconfirmed: **56 data
+  rows in 10 product categories**; 5 *kinds* of matching key: category, manufacturer, model,
+  dimension string, install_code).
 - Repo philosophy: stdlib-first (`_2_Calculator` is stdlib+pyyaml; `web_ui` is pure stdlib, Python
   3.13). Any dependency must be justified and small. `web_ui` already persists **LoRA-per-task**
   settings (`ui_settings.json`: base model, model/lora/cache paths, dated versions per task).
@@ -142,20 +147,27 @@ dimension-heavy (`DN100`, `400x300x1250`) - a pure string-similarity approach is
 | Tool | What | License | Fit |
 |---|---|---|---|
 | `difflib` (stdlib) | SequenceMatcher ratios | stdlib | zero-dep baseline; good enough for exact-ish duplicates |
-| **rapidfuzz** | C++ fuzz metrics (`token_set_ratio`, `WRatio`, `jaro_winkler`), `process.extract`/`cdist` (r2: all confirmed in README; cdist is the fast path) | MIT (3.14.6, 2026-08-30) | **[EXEC r3]** installed + run on the golden set: `token_set_ratio` ranks the correct product **#1 in 6/6** cases; **WRatio fails 3/6** (score ties at 86) -> use token_set_ratio only; zero deps, 12 MB |
+| **rapidfuzz** | C++ fuzz metrics (`token_set_ratio`, `WRatio`, `jaro_winkler`), `process.extract`/`cdist` (r2: all confirmed in README; cdist is the fast path) | MIT (3.14.6, 2026-08-30; r4-reconfirmed) | **[EXEC r3]** installed + run on the golden set: `token_set_ratio` ranks the correct product **#1 in 6/6** cases (r4: extended to **22/22**, Round 4 §1); **WRatio fails 3/6** (score ties at 86) -> use token_set_ratio only; zero deps, 12 MB |
 | **sentence-transformers + multilingual embeddings** (`intfloat/multilingual-e5-small` **MIT** or `paraphrase-multilingual-MiniLM-L12-v2` **Apache-2.0**, both licenses r2-confirmed; both 384-d) | 384-d vectors, cosine top-k; e5 requires `"query: "`/`"passage: "` input prefixes (r2-confirmed — easy to forget, silently degrades matching) | Apache/MIT models, but torch dep | **[DOCS]** optional tier; r3 quantified the need precisely: raw German vs English catalog tops out at **27-33** token_set — useless; but if extraction emits English descriptions (as the golden CSV does), embeddings are unnecessary for this catalog |
 | Cross-encoder reranker (ms-marco MiniLM) | joint scoring of (position, candidate) | Apache | **[DOCS]** unnecessary at catalog size 56 |
-| Attribute/dimension parse | regex DN/WxH -> numeric compare | stdlib | **[EXEC r3 — load-bearing]**: the tightest golden case (P-SIL-001 vs dimension-sibling P-SIL-004) separates by only **5.6 pts** of token_set (100 vs 94.4); a score-only threshold cannot cut there — the dimension veto decides |
+| Attribute/dimension parse | numeric **dimension profile**: multiset of DN/WxH/WxHxL tokens (x-joined digits included, EI30/EI90 fire ratings excluded) | stdlib | **[EXEC r4 — load-bearing]**: across all 22 golden rows the tightest top-1 margin is **1.6 pts** (LV0012: 91.3 correct vs 89.7 wrong) and P-SIL-001 vs dimension-sibling P-SIL-004 is 5.6 pts (100 vs 94.4) — no score-only cut separates these; the profile veto decides. It also rescues the desc+model and difflib variants from 21/22 and 20/22 back to 22/22 (Round 4 §1) |
 
-**Recommendation (r2, thresholds made empirical by r3):** hybrid score in a stdlib script:
-`score = 0.35*rapidfuzz(token_set) + 0.35*cosine(e5) + 0.2*attr_agree(DN/WxH, category) + 0.1*manufacturer_hint`;
-top-1 above threshold -> `suggested_product_id`; else `review_required`. Ship rapidfuzz as the only
-required dep; embeddings tier optional (flag in settings). Model hints like `TVJ-D` vs `VAV-500-300`
-match better with token/character metrics than embeddings - the two techniques complement.
-**r3-empirics: correct matches score 84-100 token_set, best wrong matches 50-94; use
-token_set >= 80 + dimension agreement = auto-accept, 60-80 or dimension mismatch = review,
-< 60 = no match; and drop WRatio entirely (3/6 failures from 86-ties). The English-description
-contract at extraction is what makes this work — see Round 3 §4.**
+**Recommendation (r4-rewritten; supersedes the r2 weighted-blend formula AND the r3 band-flag
+policy — both refuted by execution, Round 4 §1):** score = `token_set_ratio(position.description,
+catalog.description)` — **descriptions only**, never `desc+model` concatenation (it drops LV0012
+to a wrong product: wrong 78.8 vs correct 72.4). Apply a three-part veto first: equal `unit`,
+equal `category`, equal numeric **dimension profiles** (multiset of DN/WxH/WxHxL tokens; EIxx
+ratings excluded); top-1 of the survivors wins. rapidfuzz is a pinned **required** dep (MIT, zero
+deps, 12 MB); `difflib` is a degraded fallback, not an equal alternative (20/22 raw on golden).
+The raw score drives ONLY whether the LLM tie-break runs — **never the review flag**: golden flags
+are source-driven (`supplier_quote_required=true` in catalog.csv ⇒ review_required=true,
+status=supplier_quote_required, price_source=supplier_package, match_confidence=0.72; catalog row
+⇒ 0.92 / false / calculated — reproduced 22/22, Round 4 §2). Manufacturer/model hints are
+tie-break evidence and at most a small bonus, not input text (catalog manufacturers are fictional
+Demo*, so a name-match bonus is unmeasurable here). The English-description contract at
+extraction is what makes this work (Round 3 §4); embeddings only if extraction ever stays German
+(raw German vs English catalog = 27-33 token_set, noise). WRatio stays dropped (3/6 r3 failures
+from 86-ties).
 
 ## 6. Comparator / verification (todo step 3's `<comparator agent>`)
 
@@ -184,7 +196,7 @@ language mismatch); the quote-anchor method is cheaper and more explainable in t
 | Sectioning | heuristic headers + LLM JSON confirm | deterministic anchor, cheap | EXEC (regex side) / DOCS (LLM side) |
 | Inference | **llama.cpp `llama-server`** (MIT, v0.6.0) + GLM-family GGUF (4.7-Flash 30B-A3B workstation / 4.6 355B server-class); dev box = hosted API until hardware exists | local (tender confidentiality), OpenAI-compatible, json_schema, runtime per-request `lora` field | **DOCS** (nothing installed here; see r3 §5) |
 | Structuring | json_schema + stdlib tolerant parser + unit-map post-pass | valid JSON guaranteed, value-level repair | **DOCS** |
-| Matching | **rapidfuzz token_set_ratio** + mandatory dimension/attribute veto (+ optional e5 embeddings) | permissive, tiny; token_set 6/6 top-1 on golden; WRatio dropped | **EXEC** |
+| Matching | **rapidfuzz token_set_ratio on descriptions** + unit/category/dimension-profile veto; flags source-driven, score for tie-break only (e5 embeddings only for German output) | tiny; token_set top-1 **22/22** on golden (r4); WRatio dropped | **EXEC** |
 | Verification | validators + quote-anchor (verbatim-German quote) + LLM comparator (+ self-consistency k=3) | explainable, source-page traceable; quote anchor separates 100 vs <=37 | **EXEC** (rapidfuzz part) / DOCS (LLM part) |
 | Client code | stdlib `urllib`/`json`/`csv` | matches repo philosophy | EXEC (stdlib always available) |
 
@@ -510,7 +522,9 @@ note x-ordering quirk — words re-sort to `(B x H) 10 Ø cm`, keep use_text_flo
 - **Gray zone is real and narrow:** correct 84-100 vs best-wrong 50-94.4; the 84-94 overlap is
   exactly dimension-sibling territory (400x300x1250 vs 540x400x1250; DN100 vs DN125). Empirical
   policy: `token_set>=80 AND dimension-agree -> accept; 60-80 or dim-mismatch -> review; <60 ->
-  no-match`. Attribute veto is load-bearing, not cosmetic.
+  no-match`. Attribute veto is load-bearing, not cosmetic. *(r4 supersession note: the accept
+  band survives as a tie-break trigger, but using these bands to set review flags is refuted —
+  LV0020/LV0021 are golden-calculated at 79.2/54.5; see Round 4 §1.)*
 - **German reality check:** raw German item text vs English catalog tops out at **27-33** (noise).
   Matching only works on English normalized descriptions — the extraction stage's translation is
   part of the matching contract, not a nicety. (Quote-anchor side-finding: English desc vs German
@@ -544,3 +558,140 @@ general search unusable; direct primary fetches remain the research primitive.
 5. Inference: dev box cannot run recommended models -> configurable base URL + hosted-API dev
    path; production llama-server plan unchanged (docs-verified).
 6. Corrections: catalog = 56 products (not 57); pdfplumber dep footprint = 7 packages/~36 MB.
+
+---
+
+## Round 4 - logical analysis, cross-report consistency, validation
+
+- **Date:** 2026-10-10. **Method:** (1) contradiction pass vs `context_agent_1` (read fully),
+  each dispute settled by execution against the real materials; (2) internal audit of this
+  report's own matching semantics; (3) contract reads of `_2_Calculator` step1/step3/step4 +
+  `validate.py`, `web_ui/server.py`, `_4/context_agent_5`; (4) full **22-position** golden
+  reproduction (round 3 covered only 6). Scripts: `/tmp/r4/match_check.py`,
+  `/tmp/r4/veto_rerun.py`, `/tmp/r4/contract_checks.py`.
+
+### 1. Full golden matching reproduction (executed — 22/22)
+
+Rule under test = §5 as rewritten above: `token_set_ratio(position.description,
+catalog.description)`, veto = unit OR category OR unequal numeric dimension profiles (when both
+sides non-empty), top-1 wins. Variants (raw = no veto, veto = with):
+
+| Variant | Scorer / texts | raw | + veto |
+|---|---|---|---|
+| **A (recommended, this report)** | rapidfuzz token_set, desc vs desc | **22/22** | **22/22** |
+| B (context_agent_1 R3.6) | token_set, desc+model vs desc+model | 21/22 | 22/22 |
+| C | difflib SequenceMatcher, desc vs desc | 20/22 | 22/22 |
+| D | difflib, desc+model | 21/22 | 22/22 |
+
+- Variant A: correct matches score **54.5-100**, best-wrong 40.0-94.4. Tightest top-1 margins:
+  LV0012 (91.3 vs 89.7 = **1.6 pts**), LV0016/17 (80.7 vs 76.7 = 4.0), LV0006/LV0011 (100 vs
+  94.4). Min-correct (54.5) < max-wrong (94.4) ⇒ **no global score threshold separates correct
+  from wrong** — only per-position top-1 + veto does. All 22 flags
+  (price_source/match_confidence/review_required/status) then derived from the matched
+  product's `source_type`/`supplier_quote_required` reproduce the golden JSON **22/22**
+  (§2 below). LV0021 is the cautionary row: catalog text "Connection-angle set" vs position
+  "Connection angles for wall or ceiling mounting" scores only **54.5** (best-wrong 40.0) —
+  golden still says `calculated`/`review_required=false`.
+- B fails LV0012 raw because appending hints (`TVJ-D` vs `VAV-300-200`) lifts wrong P-VAV-003
+  (78.8) above correct P-VAV-002 (72.4). C fails LV0017 raw on a **51.2 tie** between 30 mm and
+  60 mm mineral wool (char-ratio cannot see the digits) and LV0012 to P-VAV-005. The veto
+  rescues B/C/D to 22/22 — that is the veto's proof of being load-bearing, not cosmetic
+  (refines r3, which had only the 5.6-pt P-SIL case).
+- **r3 band policy partially refuted by golden:** "60-80 or dim mismatch = review, < 60 =
+  no match" mis-flags 2 rows — LV0020 scores 79.2 and LV0021 54.5, both golden `calculated`/
+  `review_required=false`. Resolution: score bands decide only whether the LLM tie-break runs;
+  flags come from the source (§2). First-cut tie-break trigger for implementation: top-1 raw
+  < 95 AND margin to #2 < 10 (covers the 1.6-pt LV0012 class), or conflicting hints.
+
+### 2. Downstream contract checks (executed / code-verified, file:line)
+
+- **install_code**: csv `expected_install_code` == catalog `install_code` of the matched
+  product == golden JSON `install_code`, **22/22**. `_2` takes it from the **catalog row**
+  (`src/_2_Calculator/step1_material.py:49`), ignoring the csv column — `expected_install_code`
+  is validation data; disagreement is a matching-error signal, not an override.
+- **Flags are purely source-driven in golden**: the tuple (price_source, match_confidence,
+  review_required, status) takes exactly two values — 16x (catalog, 0.92, false, calculated),
+  6x (supplier_package, 0.72, true, supplier_quote_required); the 6 are exactly the products
+  with `supplier_quote_required=true` in catalog.csv (P-SIL-001/003/004, P-VAV-001/002,
+  P-INS-003); deriving all four from the matched product reproduces golden **22/22**; csv
+  `ground_truth_status` == f(catalog supplier_quote_required) **22/22**; csv category ==
+  catalog category **22/22** (the category veto is safe).
+- **What `_2` actually consumes** (read, not assumed): from the csv only lv_id, source_page,
+  suggested_product_id, quantity, unit (step1_material.py:40-57; web_ui gate
+  `REQUIRED_CSV_COLUMNS`, server.py:42 — the same five; `category`, `manufacturer_hint`,
+  `model_hint`, `expected_install_code` are ignored). step1 then **derives** install_code,
+  price_source, match_confidence, review_required, status from the catalog row
+  (step1_material.py:44-57); `MATCH_CONFIDENCE = {catalog: 0.92, supplier_package: 0.72}` is
+  the documented placeholder (common.py:28-30). step1:41 `catalog[row["suggested_product_id"]]`
+  KeyErrors on an empty id (confirms agent 1's patch need). step4 sums supplier-package
+  material on `price_source` (step4_project.py:29-32); web_ui consumes `review_required`
+  (count server.py:467, amber dot :651, "supplier quote"/"priced" chip :741-742) and
+  `price_source` (supplier_material :448) — **nothing anywhere consumes `match_confidence`
+  today** (zero references in server.py; calc.json holds exactly {0.72, 0.92}, no match_score
+  field; calc-vs-golden flag fields identical 22/22).
+- **Agent 5's "real match score" enabler chain verified:** context_agent_5 R3.8 waits for real
+  `_1` scores; agent 1 calls the `_2` passthrough patch "the single blocking integration
+  item". Executed confirmation: no real score reaches calc.json today; the chain is `_1` step5
+  writes `match_score` into tender_lv_positions.csv → `_2` patch copies it into calc.json →
+  `_4` match_quality. **One correction to agent 1's R3.8 patch:** it proposes "prefer
+  row['match_score'] over hardcoded MATCH_CONFIDENCE" — but `_2` validate.py compares every
+  golden field incl. match_confidence at TOL 0.011 (validate.py:16, 44-46), so overwriting
+  match_confidence with a real fuzzy score (0.545-1.0 on golden) breaks the 22/22 gate.
+  Resolution (validate ignores extra fields — `labour_role` precedent, validate.py:5-7): the
+  patch must **add `match_score` as a new position field** and leave match_confidence
+  semantics unchanged in example mode. Satisfies agent 5 without regressing `_2`.
+
+### 3. Contradiction matrix vs context_agent_1 (all resolved)
+
+| # | Dispute | Resolution (evidence) |
+|---|---|---|
+| 1 | Match texts: desc-only (r3 here) vs desc+model (A1 R3.6) | **desc-only**: A 22/22 raw vs B 21/22 (LV0012 wrong at 78.8 vs 72.4). Hints = tie-break evidence/bonus only |
+| 2 | review_required: A1 `0.55<=s<0.85` band vs golden source-driven | **source-driven** (22/22 reproduction). A1's band term flags 9/16 golden catalog rows (its composite auto-floor ≈ raw 91.5 with mfr=0, while correct scores run 54.5-100); my r3 bands flagged 2 (LV0020/21). A1's extra triggers (verdict==corrected, s is None) are fine and kept |
+| 3 | Threshold scale: raw token_set 80/60 (r3 here) vs composite 0.85/0.55 (A1 R3.6/R3.2) | **raw scale in v1**. A1's `0.82*fuzzy+0.10*attr+0.08*mfr` has an effectively unreachable auto-floor on this catalog (mfr≈0 always: Demo* vs Trox Hesco). Tie-break criterion for any future recalibration = `_2` validate 22/22 |
+| 4 | rapidfuzz required (here) vs optional w/ difflib fallback (A1 R3.6) | **required pinned dep**; difflib raw 20/22 (51.2-tie on 30-vs-60 mm) — veto rescues it to 22/22 only because this catalog is dimension-dense; degraded mode at best |
+| 5 | install_code provenance (who derives it) | converged: catalog is operative (step1_material.py:49), csv column is validation — equal 22/22 today |
+| 6 | e5 embedding weight 0.35 (r2 here) vs optional tier (A1) | **optional tier** (A1 right; already conceded r3, now proven): token_set alone 22/22 given the English-description contract; e5 only if extraction stays German (27-33 noise) |
+| 7 | catalog size 57 vs 56 | both reports 56 data rows / 10 categories (57 incl. header — the source of the original 57); r3-executed, r4-reconfirmed |
+
+Convergences confirmed (no conflict): pypdf splitting, poppler text path, llama.cpp LoRA
+mechanics, supplier-package rows keep their product id (A1 R2/R3 == golden semantics verified
+here), status vocabulary ownership (`calculated` set by `_2`).
+
+### 4. Internal-logic audit — fixes applied in place
+
+- §5 recommendation block rewritten: the r2 blend formula (0.35 rapidfuzz + 0.35 e5 + 0.2 attr
+  + 0.1 mfr) contradicted both the r3 empirics printed below it and the r4 execution; the r3
+  band-flag policy contradicted golden on 2 rows. Both removed/replaced by the r4-validated
+  rule; dimension-parse table row and stack-table Matching row updated (6/6 → 22/22, tightest
+  margin 5.6 → 1.6 pts); ground-truth paragraph reworded ("5 distinct categories of matching
+  key" was misreadable as 5 product categories — it is 10 categories / 5 key kinds).
+- Consistency gap closed: this report (owning match_confidence semantics per the module split)
+  previously never stated them; §5 now pins the 0.92/0.72 source-driven semantics with the
+  22/22 proof, and the supplier-quote gating flow (supplier_package ⇒ keep id + 0.72 +
+  review_required + status, exactly the golden 6 rows).
+
+### 5. Updated recommendations (deltas only)
+
+1. `step5_match.py`: token_set(desc, desc) + unit/category/dimension-profile veto + top-1;
+   write `match_score` (2 dp), top-3 `match_candidates`, and source-driven
+   `price_source`/`review_required`/`status`; LLM tie-break only per the §1 trigger.
+2. `_2` patch shape (amends agent 1 R3.8): add `match_score` as a new field, never overwrite
+   `match_confidence` in example mode; guard `catalog.get(row.get("suggested_product_id") or "")`.
+3. `_1`'s validate.py gate = exactly the reproduction executed here (matched_product_id, the
+   4-field flag tuple, install_code, for all 22) — it is deterministic and proven.
+
+### 6. Remaining open questions
+
+- Unmatched-row path untested vs golden: golden contains only matched rows, yet the real
+  tender will produce unmatched ones (status vocabulary per A1 R3.7) — no ground truth exists
+  for `insufficient_information`/`out_of_scope` behavior downstream.
+- `match_score` vs `match_confidence` for `_4`'s value-weighted mean once real scores land:
+  agent 5 R3.8 implies the fuzzy score; the golden gate implies constants. Suggested joint
+  decision: keep both fields, `_4` weights on `match_score` (needs agent 5 sign-off).
+- Manufacturer-name bonus unmeasurable on the Demo* catalog (0 signal on all 22 rows);
+  re-quantify when a real supplier catalog arrives.
+- External check (2026-10-10, PyPI JSON API): rapidfuzz still **3.14.6 / MIT / 2026-08-30**,
+  `requires_python >=3.11` (repo 3.13.2 fine), numpy only an optional extra — no drift from
+  the r2/r3 claims. SearxNG general engines still suspended (brave "too many requests",
+  duckduckgo "CAPTCHA", google-cse "too many requests") — wikipedia-only; direct primary
+  fetches remain the research primitive.

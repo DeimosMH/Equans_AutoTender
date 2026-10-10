@@ -135,7 +135,7 @@ Env overrides, matching the house pattern: `AUTOTENDER_CALC_OUT` (write into a t
 Notes:
 
 - **The "why" is two-sourced**: public award notices give *prices and winner* (what), only internal debriefs and `--` later `_4_RecursiveImprovement` `--` give *reasons*. Reason codes are a fixed taxonomy (price, technical score, references, capacity, brand/spec match, risk, relationship) assigned by the extraction LLM, so they are aggregatable features, not free text.
-- `relative_price_position = our_bid / award_price` (or / median bid when all bids are known) is the single most predictive feature in classical bidding literature; it is normalized, so bids of different sizes compare.
+- `relative_price_position = our_bid / award_price` is the single most predictive feature in classical bidding literature; it is normalized, so bids of different sizes compare. (The `/ median bid` variant is only possible when all bids are known — for us that means `_4` participant-inspection captures; public sources publish the winner only, so v1 uses the winner/award price — round-4 §C2.)
 - `client_price_sensitivity` is *derived* per client from their award history (dispersion of award/estimate ratios) and stored in `clients.csv` — a stat, not a guess.
 - PII: private-client names stay internal; public bodies are fine. Raw HTML snapshots are gitignored.
 
@@ -150,7 +150,7 @@ Notes:
    - `heuristic` (v0, day one, stdlib): exactly the `stretch_bid_optimization` block — `P = clamp(ref 0.55 + appetite 0.05 + competition −0.05 − 0.05·Δprice%, 0.05, 0.95)` with `Δprice%` = distance of the bid from the reference-price anchor. Calibrated to reproduce the golden 0.69 / 0.63 / 0.49 at margins 2.5 / 4.0 / 6.5.
    - `tabular` (v1): logistic regression or GBM with a **monotonic constraint** on relative price position (price up `->` P(win) never up), isotonic-calibrated on a held-out set. Serves in milliseconds; can stay stdlib/numpy.
    - `lora` (v2): the base LLM (per `BASE_MODELS`) + the selected `win_ratio` adapter scores the serialized feature bundle (section 7). The numeric curve is still anchored to the calibrated tabular core — the LLM contributes the judgment layer and narratives, never raw uncalibrated numbers.
-3. **Curve materialization:** `predict.py` evaluates the model on a margin grid `0–15%` step `0.5` (the slider's exact range in `index.html`) and returns **anchor points**, plus the three scenario rows computed at the `scenario_margins_pct`. `expected_contribution_chf ≈ P(win) × (bid_price − cost_baseline)`. **Round-2 verification pinned the golden arithmetic:** `bid_price_chf = ceil(baseline/(1−margin) to commercial.round_to_chf=1000)` reproduces all three golden bids *exactly* (425117.06→426000, 431759.50→432000, 443303.87→444000 with baseline 414489.12), while the golden `expected_contribution_chf` values match `P×(bid−baseline)` only within ±0.7% (inconsistent sign) — no rounded/unrounded P×bid combination reproduces all three, so `validate.py` must use a tolerance (rel ±1% / abs ±100 CHF) or the golden must be regenerated from the implemented formula.
+3. **Curve materialization:** `predict.py` evaluates the model on a margin grid `0–15%` step `0.5` (the slider's exact range in `index.html`) and returns **anchor points**, plus the three scenario rows computed at the `scenario_margins_pct`. `expected_contribution_chf ≈ P(win) × (bid_price − cost_baseline)`. **Arithmetic pinned by execution (rounds 2–4):** `bid_price_chf = ceil(baseline/(1−margin) to commercial.round_to_chf=1000)` reproduces all three golden bids *exactly* (425117.06→426000, 431759.50→432000, 443303.87→444000 with baseline 414489.12), and the golden `expected_contribution_chf` values are reproduced **exactly, to the cent** once the reference price for `Δprice%` is the **unrounded** indicative selling price `baseline/(1−target_margin_pct)` = 438612.83 (round-4 execution; round 2's ±0.7% residual was an artifact of computing with the 2dp-rounded P, round 3's +0.14–0.21% of ceil-100'ing R to 438700) — `validate.py` pins bids, probabilities and contributions exactly, no tolerance.
 4. **Uncertainty band:** every grid point carries `p_win: {min, mid, max}` — either quantiles from an ensemble / conformal bands, or (simpler, recommended v1) the model evaluated under worst / expected / best credible competition settings (the `+0.05 appetite`, `−0.05 competition` knobs already in params are exactly such scenario shifts). Monotonicity is enforced per band.
 
 ### 4.2 How it is consumed — endpoints & JSON contract
@@ -264,7 +264,7 @@ So: *select profit on the slider; the model answers with a banded win probabilit
 - **Selection bias / feedback loop**: we only observe outcomes for bids we submitted; optimizing expected contribution can ratchet margins down. Mitigation: clamps from params (`0.05–0.95`), randomization-free but monitored deployment, `_4` audits.
 - **Concept drift** (market, inflation): recency-weight training; alert on calibration decay in `metrics.json`.
 - **LLM numeracy & latency**: uncalibrated probabilities, slow inference on slider moves. Mitigation: calibrated tabular core, cached curves, browser interpolation (as designed above).
-- **Golden-number pinning** *(resolved in round 2 — kept for history)*: the exact `expected_contribution_chf` arithmetic in `expected_output_example.json` turned out **not exactly reproducible** (±0.7% internal inconsistency); `validate.py` therefore pins the bid ceil-1000 rule exactly, probabilities to 2dp, and contributions with a rel ±1% tolerance (or the golden gets regenerated from the implemented formula).
+- **Golden-number pinning** *(resolved in round 4 — kept for history)*: rounds 2–3 believed the `expected_contribution_chf` arithmetic in `expected_output_example.json` was only reproducible within a tolerance (±1%, then ±0.5%); round-4 execution showed the golden is **exactly** reproducible — the residuals were artifacts of using the 2dp-rounded P (round 2) and of rounding the reference price to 100 CHF (round 3). `validate.py` pins the bid ceil-1000 rule, 2dp probabilities and contributions to the cent, with `R = baseline/(1−target_margin_pct)` unrounded (438612.83 for the golden subset).
 
 ## 10. References
 
@@ -303,7 +303,7 @@ Recomputed with `B = example_subset_summary.cost_baseline_chf = 414489.12` (Deci
 - **Bid rule verified exactly:** `bid_price_chf = ceil(B/(1−margin/100) / round_to) × round_to` with `round_to = commercial.round_to_chf = 1000` — a param that already exists in `project_parameters.json` and that round 1 never mentioned. All three golden bids reproduce to the franc. **No new config needed.**
 - **Probabilities:** the golden 0.69/0.63/0.49 are 2-dp rounded; implied unrounded values are 0.6938 / 0.6254 / 0.4886.
 - **Expected contribution is NOT exactly reproducible:** residuals vs `P×(bid−B)` are +0.55%/−0.74%/−0.29% (inconsistent sign); implied baselines (solving `contrib = P×(bid−B)`) are 414426 / 414617 / 414574 — spread ~190 CHF around 414489. No combination of {rounded, unrounded} P × {rounded, unrounded} bid pins all three. The golden file is internally consistent only to ≈±0.7%.
-- **Decision for `validate.py` (step 1 of the plan):** pin the bid ceil rule exactly, pin probabilities to 2 dp, check contribution with rel ±1% (or abs ±100 CHF) tolerance — or regenerate the golden file from the implemented formula and demote the current one to "indicative". Round-1 §9 risk downgraded from blocker to a one-line tolerance decision.
+- **Decision for `validate.py` (step 1 of the plan):** pin the bid ceil rule exactly, pin probabilities to 2 dp, check contribution with rel ±1% (or abs ±100 CHF) tolerance — or regenerate the golden file from the implemented formula and demote the current one to "indicative". Round-1 §9 risk downgraded from blocker to a one-line tolerance decision. *(Round-4 supersession: no tolerance needed — exact reproduction with the unrounded R; see round-4 §A. The ±0.7% measured here was an artifact of the 2dp-rounded P.)*
 - **Two baselines, one schema:** the golden block sits next to `example_subset_summary` (subset baseline, deliberately excludes services — see `step4_project.py` scope note), while production cost truth is `project_cost.cost_baseline_chf` (positions + services + allowances + overhead). Recommendation: `predict.py` consumes `project_cost.cost_baseline_chf`; `validate.py` reproduces the golden against the subset baseline.
 - **Heuristic anchor open point:** implied unrounded P ≈ `0.60 − 0.05·Δprice%` with a reference price ≈ 434.2k (≈ `B/(1−4.5%)`) to within ±0.002 — but `stretch_bid_optimization` nowhere defines the reference price for `Δprice%`, and `target_margin_pct` is 5.5 (whose indicative price 438.5k does *not* fit). Default proposal: reference = indicative selling price at `target_margin_pct`; confirm with product owner (open question F1).
 
@@ -339,9 +339,9 @@ Recomputed with `B = example_subset_summary.cost_baseline_chf = 414489.12` (Deci
 
 ### F. Open questions (new/updated)
 
-1. Reference-price anchor for `Δprice%` in heuristic mode — undefined in `stretch_bid_optimization`; golden implies ≈ `B/(1−4.5%)`; proposal: indicative selling price at `target_margin_pct` (5.5%). Product-owner decision.
+1. Reference-price anchor for `Δprice%` in heuristic mode — undefined in `stretch_bid_optimization`; **resolved in rounds 3–4**: unrounded indicative selling price at `target_margin_pct` (`B/(1−5.5%)` = 438612.83 for the golden subset), already materialized for production as `calc.json project_cost.indicative_selling_price_chf`.
 2. Production baseline for `recommended_bid_range`: `project_cost.cost_baseline_chf` (recommended) vs `example_subset_summary` (validate-only). Implementation detail to write into `predict.py`'s docstring.
-3. Golden-contribution tolerance vs golden regeneration (§B) — decide in step 1.
+3. Golden-contribution tolerance vs golden regeneration (§B) — **resolved in round 4**: exact reproduction, no tolerance needed (see round-4 §A).
 4. Where real training triggers from: `/api/settings/update` growing a real train call (round-1 §7) vs a separate train entrypoint that then registers (agent 4 §5). Both keep `server.py`'s current fabricate-dates behavior until `train/step3_lora.py` exists.
 
 ### G. Step-plan deltas (vs round-1 §8)
@@ -380,25 +380,30 @@ Stdlib check (`python3`, Decimal, ROUND_CEILING/ROUND_HALF_UP) against `material
 | Target | 4.0 | 432000 | 432000 | **0 CHF** | 0.63 | 0.63 | **0.00** | 10968.15 | 10951.01 | **+17.14 CHF (+0.157%)** |
 | Conservative | 6.5 | 444000 | 444000 | **0 CHF** | 0.49 | 0.49 | **0.00** | 14448.36 | 14418.68 | **+29.68 CHF (+0.206%)** |
 
-Worst case: bid 0, probability 0.00 (2dp), contribution +29.68 CHF = +0.206% — round 2's ±1% tolerance tightens to **rel ±0.5% / abs ±50 CHF** in `validate.py`. The contribution residual is systematically positive (golden implied baselines spread 414426–414617 vs our 414489.12) — that is the golden file's internal inconsistency, not model error; no formula beats it.
+Worst case: bid 0, probability 0.00 (2dp), contribution +29.68 CHF = +0.206%. **Round-4 correction:** this table was measured with `R = ceil100(indicative) = 438700`; with the **unrounded** `R = 438612.8254` (same bids, same 2dp probabilities) the contribution residuals are **exactly 0.00 CHF** on all three scenarios — the "golden file's internal inconsistency" does not exist, it was an artifact of the rounded R (and, in round 2, of the rounded P). `validate.py` pins everything exactly; see round-4 §A.
 
 **The formula that reproduces the golden file (all three scenarios exact on bids and probabilities):**
 
 ```
 bid(m)     = ceil_to( B / (1 − m/100), round_to=1000 )           # commercial.round_to_chf
 indicative = B / (1 − target_margin_pct/100)                     # = 438612.83 (5.5%)
-R          = ceil_to( indicative, 100 ) = 438700                  # reference price anchor
+R          = indicative, UNROUNDED = 438612.8254                 # reference price anchor
+               # ROUND-4 CORRECTION: round 3 used ceil_to(indicative,100)=438700 — that also
+               # reproduces the rounded probabilities but drifts contributions +0.14–0.21%;
+               # only the UNROUNDED R pins them to the cent (see round-4 §A)
 Δprice%    = (bid / R − 1) × 100                                  # on the ROUNDED bid
 P0         = 0.55 + 0.05 − 0.05 = 0.55                            # ref_prob + appetite + competition
 P(offset)  = clamp( P0 + offset − 0.05 × Δprice%, 0.05, 0.95 )
    mid = P(0);  min = P(−0.05) [competition];  max = P(+0.05) [appetite]
+               # clamp is OUTERMOST (offset-then-clamp): at margin 15 all three band values
+               # clamp to 0.05; clamp-then-offset would wrongly report max = 0.10
 contribution = P_mid_unrounded × (bid − B),  rounded half-up 2dp
 ```
 
 Exactness facts established by execution (all new this round):
 
-1. **`P(R) = 0.55` exactly** — with `P0 = 0.55`, `reference_win_probability` gains a precise semantic: *win probability at the reference price*, and the appetite/competition knobs become the min/max band generators. Round-2 F1 ("reference anchor undefined") is **resolved**: reference price = indicative selling price at `target_margin_pct`, rounded up to 100 CHF. (Round-2's "indicative ≈ 438.5k does not fit" contained a hand-arithmetic slip: 414489.12/0.945 = **438612.83**, and ceil-100 of that = 438700 fits.)
-2. **Feasible-R windows** (values of R for which all three golden probabilities round correctly at 2dp): `P0=0.55 → R ∈ [438579, 438722]` (width 144 CHF = 0.033%); `P0=0.60 → R ∈ [434171, 434250]`. Chosen R = 438700 sits inside window 1 (22 CHF below its upper edge). `validate.py` re-derives R, never hardcodes it.
+1. **`P(R) = 0.55` exactly** — with `P0 = 0.55`, `reference_win_probability` gains a precise semantic: *win probability at the reference price*, and the appetite/competition knobs become the min/max band generators. Round-2 F1 ("reference anchor undefined") is **resolved**: reference price = indicative selling price at `target_margin_pct`, **unrounded** (438612.83; round-4 correction — the ceil-100 rounding of round 3 drifts contributions). (Round-2's "indicative ≈ 438.5k does not fit" contained a hand-arithmetic slip: 414489.12/0.945 = **438612.83**, and that unrounded value fits exactly.)
+2. **Feasible-R windows** (values of R for which all three golden probabilities round correctly at 2dp): `P0=0.55 → R ∈ [438579, 438722]` (width ≈144 CHF = 0.033%); `P0=0.60 → R ∈ [434171, 434250]`. Both round-3's R = 438700 and the golden's actual R = 438612.83 sit inside window 1 (re-verified by execution in round 4); only the unrounded one reproduces the contributions. `validate.py` re-derives R, never hardcodes it.
 3. **Margin-space model is impossible**: a slope s on margin would need s ∈ (0.0333, 0.0467) from 2.5→4.0 but s ∈ (0.052, 0.06) from 4.0→6.5 — empty intersection. The golden probabilities are linear in **price**, not margin. (Rules out the naive "P vs margin" reading of the params.)
 4. **Unrounded bids are impossible**: P computed on `B/(1−m)` has bid-gap ratio 1.74 < 1.857 (the minimum feasible ratio from the 2dp golden bounds) — so the golden P was computed on the **published (ceil'd) bids**. `predict.py` must evaluate P at the rounded bid.
 5. Clamp `[0.05, 0.95]` fires on the slider grid only at margins 14.5 and 15.0 (bid 487k/488k).
@@ -412,7 +417,7 @@ src/_3_Prediction/
 ├── settings.yaml               # mode: heuristic|tabular|lora|off; paths; grid; collection
 ├── common.py                   # loaders + bid/probability math (section C)
 ├── predict.py                  # serving entry: calc.json -> golden block + curve
-├── validate.py                 # golden regression: bids exact, P 2dp exact, contrib ±0.5%
+├── validate.py                 # golden regression: bids, P (2dp) and contributions EXACT
 ├── collect/
 │   ├── step1_internal.py       # web_ui/tenders/*/outcome.json + calc.json -> bids.jsonl
 │   ├── step2_opentender.py     # bulk cold-start seed (CC BY-NC-SA: prototype only)
@@ -442,7 +447,8 @@ def effective_mode() -> str                              # env AUTOTENDER_PRED >
 def resolve_model() -> dict | None                       # ui_settings win_ratio.selected; None -> heuristic
 def ceil_to(x: Decimal, step: int) -> int
 def indicative(baseline: Decimal, params: dict) -> Decimal
-def reference_price(baseline: Decimal, params: dict) -> Decimal   # ceil_to(indicative, 100)
+def reference_price(baseline: Decimal, params: dict) -> Decimal   # indicative, UNROUNDED
+                                  # round-4: == calc.json project_cost.indicative_selling_price_chf
 def scenario_bid(baseline: Decimal, margin_pct, round_to: int) -> int
 def p_heuristic(bid: int, ref_price: Decimal, params: dict, offset: Decimal = 0) -> Decimal
 def expected_contribution(bid: int, baseline: Decimal, p: Decimal) -> float
@@ -513,11 +519,12 @@ GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0        (defaults = params)
   "model": {"kind": "heuristic", "task": "win_ratio", "version": "params-v0", "selected_lora": null},
   "inputs": {"overhead_pct": 8.5, "waste_pct": 4.0,
              "cost_baseline_chf": 414489.12,      # recomputed like index.html l.634
-             "reference_price_chf": 438700, "generated_at": "2026-10-10T…"},
+             "reference_price_chf": 438612.83, "generated_at": "2026-10-10T…"},
+             # reference_price = UNROUNDED indicative (round-4; was 438700 in round 3)
   "curve": [
     {"margin_pct": 0.0,  "bid_price_chf": 415000,
      "p_win": {"min": 0.77, "mid": 0.82, "max": 0.87},
-     "expected_contribution_chf": {"min": 393.44, "mid": 418.98, "max": 444.52}},
+     "expected_contribution_chf": {"min": 392.96, "mid": 418.50, "max": 444.04}},
     … 31 points, margins 0–15 step 0.5 (slider's exact range, index.html l.499) …
     {"margin_pct": 15.0, "bid_price_chf": 488000,
      "p_win": {"min": 0.05, "mid": 0.05, "max": 0.05}, …}        # clamp fires here
@@ -527,7 +534,7 @@ GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0        (defaults = params)
 404 {"error": "tender not found"}   |   503 {"error": "prediction off"}  (mode=off)
 ```
 
-`anchors` rows are `[margin_pct, p_min%, p_mid%, p_max%]` as **integer percent** — the exact shape `winAnchors`/`winChance` (index.html l.349–361) consume today (`winAnchors = anchors.map(a => [a[0], a[2]])`). Monotone bands guaranteed per construction (same Δ offset at all grid points).
+`anchors` rows are `[margin_pct, p_min%, p_mid%, p_max%]` as **integer percent** — the shape the demo `winAnchors`/`winChance` (index.html l.349–361) consume today. Round-4 refinement (§G): the UI takes `winAnchors` from the full `curve` grid (31 points) rather than the 3 anchors, so `winChance` matches the model everywhere on the slider, not only between 2.5–6.5%. Monotone bands guaranteed per construction (same Δ offset at all grid points).
 
 ### G. web_ui integration diffs
 
@@ -537,7 +544,7 @@ GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0        (defaults = params)
 
 **`static/index.html`** (fallback-first, ~20 lines):
 - Keep l.344–349 demo `SCENARIOS`/`winAnchors` (69/63/49) as the **fallback state**; add `let winBand = null; let predBadge = "";`.
-- After the l.479–485 params refill, fetch `/api/tenders/<id>/wincurve?overhead=<ov>&waste=<wa>` (async, non-blocking). On 200: `winAnchors = wc.anchors.map(a => [a[0], a[2]])`; `winBand = wc.anchors`; `SCENARIOS[i][2] = mid%`; re-render chips/dots with `~${mid}% (min–max)`; **drop the "demo values until _3_Prediction connects" tooltip** (l.495); show `predBadge = "baseline heuristic — no compatible LoRA"` when `model.selected_lora == null` (today's live state, wording from `_4`). On error/503: **keep demo values + tooltip** (graceful degradation).
+- After the l.479–485 params refill, fetch `/api/tenders/<id>/wincurve?overhead=<ov>&waste=<wa>` (async, non-blocking). On 200: `winAnchors = wc.curve.map(pt => [pt.margin_pct, Math.round(pt.p_win.mid * 100)])` *(round-4 fix: feed the FULL 31-point grid, not the 3 anchors — `winChance()` l.351–361 loops any sorted anchor list unchanged, the slider step 0.5 equals the grid step so interpolation error is zero, and the demo's flat wings are eliminated: with 3 anchors the browser flat-extrapolates to 69% at margin 0 (model 81.92%) and 49% at margin 15 (model 5.00%) — up to 44pp wrong — while between anchors it deviates ≤0.9pp)*; `winBand = wc.curve`; `SCENARIOS[i][2] = mid%` at the scenario margins; re-render chips/dots with `~${mid}% (min–max)`; **drop the "demo values until _3_Prediction connects" tooltip** (l.495); show `predBadge = "baseline heuristic — no compatible LoRA"` when `model.selected_lora == null` (today's live state, wording from `_4`). On error/503: **keep demo values + tooltip** (graceful degradation).
 - `winChance()` and the slider handler stay untouched — browser interpolation, model never called on `mousemove`. Band v1: `sc-win` becomes `≈ N% (L–H)%` via piecewise interpolation over `winBand` columns 1/3.
 
 ### H. Cross-module composition (after reading round-2 `_1` and `_4` reports)
@@ -558,4 +565,106 @@ GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0        (defaults = params)
 4. **Band width**: ±0.05 knobs → ±5 pp probability band is wide but honest; consider 0.5× scaling or Venn-Abers bands once ≥50 labeled rows exist.
 5. **collect/step2_opentender** is prototype-only (CC BY-NC-SA); production data must re-derive from simap API (commercial use permitted per AGB) + TED.
 6. **simap quirks** (agent 4, verified): `newestPubTypes=award` → 400 E0025 (filter client-side), bare `search` → 400 E0003, throttle ≤1 req/s, cache raw JSON.
-7. Golden contribution tolerance set to rel ±0.5% / abs ±50 CHF (residuals +0.14…+0.21%); alternatively regenerate the golden from the implemented formula and demote the current one to "indicative" — one-line product-owner decision carried from round 2.
+7. Golden contribution tolerance — **RESOLVED in round 4**: with `R = baseline/(1−target_margin_pct)` *unrounded* (438612.83), all three golden contributions reproduce to the cent; `validate.py` pins bids, 2dp probabilities and contributions exactly. The earlier ±1% (round 2) / ±0.5% (round 3) tolerances were artifacts of the rounded P / ceil-100 R and are obsolete.
+
+---
+
+## Round 4 — logical analysis, cross-report consistency, validation
+
+- **Date:** 2026-10-10 (round 4). **Agent:** context agent 3 of 6. **Mission:** logical analysis, cross-report consistency (vs pair agent 4, all rounds), internal-logic audit, and validation by execution against live code.
+- **Method:** pair report re-read fully; every repo line citation re-checked against the live files; golden arithmetic re-executed (`/tmp/r4_golden.py`, Decimal); `winChance()` re-implemented exactly from `static/index.html` l.351–361 and exercised on the slider grid; two live external API probes (simap, TED).
+
+### A. EXECUTION: golden scenarios reproduce EXACTLY (residual story closed)
+
+Hypothesis grid over the reference price R (Decimal, `B = 414489.12`, `target_margin_pct = 5.5`, only `project_parameters.json` knobs):
+
+| R hypothesis | max contribution residual |
+|---|---|
+| round 3: `ceil100(B/0.945)` = 438700 | +29.68 CHF (+0.206%) |
+| **`B/0.945` unrounded = 438612.8254** | **0.00 CHF (0.0000%)** |
+| `ceil10` = 438620 | +2.44 CHF (+0.017%) |
+| round-2 guess `B/(1−4.5%)` = 434020.02 | −1580.60 CHF (−10.96%) |
+
+With `R = 438612.8254`: Aggressive 426000 / 0.69 / **7986.03 (+0.00)**, Target 432000 / 0.63 / **10951.01 (+0.00)**, Conservative 444000 / 0.49 / **14418.68 (+0.00)** — bids, 2dp probabilities and contributions all exact. Conclusions (fixes applied in place to §4.1(3), §9, round-3 §A/§B/§C/§F/§I.7):
+
+1. The golden file is **internally exact**. Round 2's ±0.74% residual came from computing with the 2dp-rounded P; round 3's +0.14…0.21% from ceil-100'ing R. The round-4 brief's "±0.75% golden-inherent → use ±1%" is superseded by measurement.
+2. The brief's "reference price = ceil-to-100(B/(1−target_margin 0.04)) = 438700" is doubly wrong: `target_margin_pct` is **5.5** (project_parameters.json:32), and 0.04 would give 431800; 438700 = ceil100(B/0.945) — but the golden's actual R is the **unrounded** 438612.83.
+3. Feasible-R window for 2dp-P reproduction re-verified: [438579, 438722] (round 3's "width 144" is 143 counting inclusively — endpoints identical). Both 438612.83 and 438700 reproduce the rounded P's; only the unrounded R pins contributions.
+4. Band ordering pinned: **offset-then-clamp** (clamp outermost, as the round-3 formula block says). At margin 15: min/mid/max all clamp to 0.05; clamp-then-offset would wrongly show max = 0.10.
+5. Grid re-verified: clamp fires only at margins 14.5/15.0; expected-contribution argmax at **8.0%** (bid 451000, P 0.4088, contrib 14925.34) — round-3 §A(6) confirmed.
+6. **Cross-module bonus:** production R already exists as a `_2` output field — live `output/calc.json` `project_cost.indicative_selling_price_chf` = 589659.84 = 557228.55/0.945 exactly (verified). `predict.py` reads it directly; `reference_price()` recomputes it only for the subset/golden path.
+
+### B. Cross-module contract check vs live code (all citations re-verified 2026-10-10)
+
+| Claim (this report) | Live check | Verdict |
+|---|---|---|
+| `server.py:96-97` TASK_KEYS / BASE_MODELS | l.96-97 | PASS |
+| `_norm_settings` strips extra version fields | l.118-181, comprehension l.132-135 | PASS |
+| `run_steps` env pattern, cwd=CALC_DIR | l.217-227 — scripts run with cwd `_2_Calculator`, so `predict.py` must be passed **absolute** (round-3 §G already does: `PRED_DIR / "predict.py"`) | PASS |
+| `calc_tender` 4 steps / `recalc` route | l.230-238 / l.1038-1044 | PASS |
+| `GET /api/tenders/<id>` returns whole calc | l.929-937 | PASS |
+| `/api/settings/update` fabricates + auto-selects | l.994-1009, auto-select l.1007 | PASS |
+| `/api/settings/upload-data` → `uploads/lora_data/<task>_<ts>_<name>` | l.1010-1023; dir exists, still **empty** (no training data to date) | PASS |
+| `_offer_data` price = baseline/(1−margin) | l.431, l.463 (same as step4_project.py:72 and index.html l.635) | PASS |
+| index.html SCENARIOS 69/63/49, winAnchors, winChance, refill, tooltip, slider 0-15/0.5 | l.344-348, 349, 351-361, 479-485, 495, 499; browser baseline l.634, price l.635 | PASS |
+| `win_ratio.selected = null` (base mismatch) → heuristic fallback | ui_settings.json: base GLM-4.6, one win_ratio version 2026-10-10 on GLM-4.5-Air, `selected: null` | PASS |
+| `_2` calc.json ends at `project_cost` (no `recommended_bid_range`) | module output + both tenders/*/calc.json | PASS |
+| SCENARIOS/winChance location | **they live in `static/index.html`, not `server.py`** (the round-4 brief placed them in server.py; no report change needed — the report was already right) | NOTE |
+
+**wincurve vs `winChance()` executed** (exact port of l.351-361, `Math.round`, flat extrapolation outside anchors):
+
+- Anchors: `winChance(2.5)=69`, `(4.0)=63`, `(6.5)=49` — the three chips reproduce **exactly**. PASS
+- Default slider 5.5% → 55 vs model 54.56% (−0.4pp). PASS
+- Strictly between anchors (2.5–6.5): worst deviation **+0.9pp at 4.5%** (integer-rounding scale) — piecewise-linear-in-margin chord vs linear-in-price model agree to ~1pp; browser interpolation acceptable inside the anchor span.
+- **Outside anchors the demo flat-extrapolates and is badly wrong:** margin 0 → 69% vs model 81.92% (−12.9pp); margin 15 → 49% vs model 5.00% (+44pp). Design consequence applied to round-3 §G: `winAnchors` comes from the **full 31-point curve grid** (winChance itself unchanged — it loops any sorted anchor list); with slider step 0.5 = grid step, model-vs-browser deviation is zero at every snap position. Chips/dots keep the 3 scenario anchors.
+
+### C. Contradiction matrix vs agent 4 (pair) — with resolutions
+
+| # | Topic | This report | Agent 4 | Resolution |
+|---|---|---|---|---|
+| 1 | First supervised model | needs our own won/lost labels; cold-start ladder (<50 internal → heuristic) | Day 3-4 of first-week plan: "calibrated logistic v1 on the merged award set" | **Agent-4 plan re-scoped.** Public awards carry winner+price+n_bidders but no *our-outcome* labels; a calibrated classifier cannot be fit on them. Day 3-4 deliverable = bid-landscape priors (award-value / award-to-estimate distributions by canton/sector) feeding the heuristic's future calibration; first supervised model waits for internal labels. Tie-break criterion: classifiers need labels, priors need only award values. |
+| 2 | Price-position denominator | `our_bid / award_price` (or / median bid "when all bids are known") | losing bids publicly unobservable (OpenTender `bids.details` = winning bid only, TED has no runner-up field — their D2.3); participant inspection is the only legal channel (D2.1) | v1 denominator = **winner/award price** (always available); median-bid variant deferred to `_4` inspection captures. §3's "median bid" clause is now flagged as inspection-only. |
+| 3 | Client-level statistics | `client_price_sensitivity` / `competitive_intensity` derived **per client** (`data/clients.csv`) | first-week priors grouped by canton/sector/year only | same corpus, one more grouping key: normalized buyer identity (strip OpenTender `DE_/FR_/IT_` language prefixes, dedup across sources). Added as an explicit collect-step requirement; no new source needed. |
+| 4 | Collection order | module layout orders collectors internal → opentender → simap/ted (value per row) | execution starts OpenTender → simap → TED (no internal history exists yet) | not a conflict: layout orders by per-row value, execution order by availability. Both stand; documented so nobody "fixes" either. |
+| 5 | win_ratio registry state | round-2 §A2: one version 2026-10-10 on GLM-4.5-Air, `selected: null` | round-1 §1 table still says "2026-10-02 (GLM-4.6) already registered" | live `ui_settings.json` matches this report; agent 4's round-1 row is stale (their round 2 did not re-verify it). Flagged for agent 4; no `_3` action beyond heuristic fallback. |
+| 6 | Slider number producer | calibrated tabular core; LoRA = text layer | same (their §4.3/round-2 D4.2) | already merged in round 2; re-confirmed, no drift. |
+| 7 | simende vs simap | resolved round 2 (simap.ch) | agrees since round 2 | closed. |
+
+### D. Feature → data-source mapping (round-3 §E features vs agent 4's verified collectors)
+
+| Feature (§E) | Agent-4 source | Status |
+|---|---|---|
+| `log_relative_price_position` | simap `decision.vendors[0].price` / TED `BT-711-LotResult` / OpenTender `awards[].value`; our_bid internal | **COLLECTED** (vs winner price — see C2) |
+| `n_bidders` | simap `decision.numberOfSubmissions` / TED `received-submissions-type-val`; OpenTender records 0 | **COLLECTED** (2 of 3 sources) |
+| `log_bid_chf` | award values + our bids | **COLLECTED** |
+| `margin_pct` | derived (our_bid, cost_baseline) | **INTERNAL** |
+| `supplier_share_direct_cost`, `weighted_match_confidence`, `review_share` | `calc.json` (produced by `_2`; match confidences still 0.92/0.72 constants until `_1` writes real scores) | **IN-REPO** |
+| `client_type` / `canton` one-hots | simap `orderAddress.cantonId` + `procOfficeName` / TED `buyer-name` / OpenTender buyer (language-prefixed) | canton **COLLECTED**; `client_type` classification (public_k12 etc.) is **ours to derive** — not in agent 4's plan; add buyer/title heuristic |
+| `competitor_median_delta_pct` | `_4` Beta posteriors (participant inspection) | **NOT DAY-1** — deferred (C2) |
+| `capacity_utilization_pct` | internal | **INTERNAL** |
+| `competitive_intensity` / `client_price_sensitivity` | same collected corpus, grouped per client | **DERIVABLE but not explicitly planned** by agent 4 (C3) — add client grouping |
+| `tender.estimate_chf` | simap (patchy) / OpenTender `tender.value` often null (their C12) / TED | **PATCHY** — measure coverage after Day-1 load; drop estimate-relative features if <~30% populated |
+| heuristic `Δprice%` reference price | none needed v0 (internal indicative; production value already in calc.json — §A6) | **INTERNAL** |
+
+**Needed-but-not-collected:** client_type classification, per-client grouping (C3), `procedure`/`processType` one-hot (agent 4 collects `processType` in every search record — verified in their C2 transcript — but it is absent from my §E feature table; **added as a feature delta**: procedure correlates with competitive intensity). **Collected-but-unused (v1, parked):** `awardDecisionJustification` free text (feeds the LoRA reason-code layer and, cheaply, a justification-length tabular feature later), `publicationTed` flag and `remediesNotice` (join/metadata only).
+
+**Live external re-verification this round (both PASS):** `GET https://www.simap.ch/api/publications/v2/project/project-search?search=Lüftung&lang=de` → HTTP 200, 20 projects, `pubType`/`cantonId` populated; `POST https://api.ted.europa.eu/v3/notices/search` (`CY=CHE AND FT=CAN-SUPPLIER AND PD>=20260901`) → HTTP 200, no auth, `totalNoticeCount` 759 (matches agent 4's round-3 count), winner-name / BT-711 / received-submissions populated. The feature→source mapping rests on live endpoints.
+
+### E. Internal-logic audit (residual story + model form)
+
+1. **Residual story was inconsistent** across sections (round 2: ±1%; round 3 §A/§I.7: ±0.5%; round-3 §F example computed with a third, unstated R). Now unified: exact reproduction, R = unrounded indicative; all normative statements fixed in place (see §E of round-4 edits list below). Historical round-2/3 measurement tables left as history with correction markers.
+2. **Heuristic wording:** §4.1(2) "Calibrated to reproduce the golden 0.69/0.63/0.49" — "calibrated" is loose (it is *anchored*, not statistically calibrated); the statistical calibration (Beta/Venn-Abers) applies to the tabular tier only. No numeric conflict; noted to avoid conflation during implementation.
+3. **Model-form consistency:** P linear in price (not margin) everywhere (round-3 §A(3) proof re-checked); the browser chord is linear in margin — acceptable ≤1pp between anchors, eliminated outside by the full-grid `winAnchors` fix (§B). Clamp semantics, band ordering, and `P(R)=0.55` semantics now stated once, consistently, in the round-3 §A formula block.
+4. **Calibration requirements vs data plan:** Beta calibration at n∈[50,500] and Venn-Abers bands require labeled internal bids — consistent with C1's re-scoping (public data feeds priors, not the classifier).
+
+### F. Corrections applied in place this round
+
+§4.1(3) (tolerance → exact, R unrounded); §9 golden risk bullet (resolved-in-round-4 wording); round-2 §F1/F3 (reference anchor + tolerance open questions marked resolved); round-3 §A formula block (R unrounded, offset-then-clamp note), §A "worst case" paragraph (correction note), §A(1)-(2) (unrounded R); §B `validate.py` line (contrib exact); §C `reference_price()` (drop ceil-100, read calc.json field); §F contract example (`reference_price_chf` 438612.83, contributions 392.96/418.50/444.04, full-grid winAnchors note); §G (winAnchors from full curve grid, flat-wing numbers); §I.7 (resolved).
+
+### G. Remaining open questions
+
+1. `Target` as expected-contribution argmax (8.0% on the heuristic grid, outside the 2.5/4/6.5 presets) — v0 keeps params margins authoritative; revisit with the learned curve (carried from round 3 §A6).
+2. Buyer normalization across sources for per-client stats (C3): projectNumber joins exist; buyer-string joins need `DE_/FR_/IT_` stripping + dedup — spec before `collect/step3`.
+3. `estimate_chf` coverage — measure on Day-1 OpenTender load; cutoff ~30%.
+4. `_4`-owned prerequisites unchanged: outcome capture endpoint (submission-time `win_estimate`), version-registry schema, real training trigger (round-3 §I.1-3).
+

@@ -1,7 +1,8 @@
 # Context Agent 1 — Architecture & Pipeline Design for `_1_AI_InputProcessing`
 
 - Date: 2026-10-10 (round 2: verified vs repo+primaries; **round 3: implementation-ready
-  blueprint + executed validation — see `## Round 3`**)
+  blueprint + executed validation — see `## Round 3`**; round 4: logical analysis,
+  cross-report consistency + contract validation — see `## Round 4`)
 - Module: `src/_1_AI_InputProcessing` — Agent 1 of 6 (angle: architecture & pipeline design)
 - Research status: SearxNG engines (brave/ddg/google-cse) stayed suspended all round despite
   pacing; every external fact below was verified by fetching primary pages directly
@@ -13,7 +14,9 @@
 - Tender `materials/BKP_244_LV_Lueftung_260804.pdf`: **202 pages**, A4, ~3 MB, German,
   born-digital (Producer DynaPDF), **unencrypted**, full text layer — `pdftotext -layout`
   yields **585,097 chars** (≈150–200 K tokens). Poppler CLI + `gs` installed; qpdf absent;
-  repo Python had no PDF lib until round 3 installed **pypdf 6.20.0** (`--user`, R3.1).
+  repo Python had no PDF lib until round 3 installed **pypdf 6.20.0** (`--user`, R3.1);
+  round 4 re-verified pypdf 6.20.0 + **pdfplumber 0.11.10 + rapidfuzz 3.14.6** (agent 2's
+  `--user` installs, same site) all import cleanly on Python 3.13.2.
   Python **3.13.2**. Printed footers restart per system ("Seite 10 / 20" on **physical**
   page 78); golden `source_page` uses **physical** pages (LV0001 → 78) — never trust footers.
 - **Verified tender map** (header `SH Erlenstrasse Oberglatt  244.xx [LAyy] <name>  Seite n/m`):
@@ -137,8 +140,9 @@ golden **except money** (owned by `_2`).
 - Parallelism: `ThreadPoolExecutor(max_workers=settings.concurrency)` (stdlib; I/O-bound) +
   token bucket for requests/min; retries ONLY in `llm_client.py` (no nested retry loops).
 - **Comparator, two tiers (cheap first):** (1) rules (free) — page in section, quantity +
-  dimension tokens present in page text, snippet fuzzy-containment (SequenceMatcher ≥ 0.55
-  or best-line ≥ 0.75); (2) LLM comparator for failing/borderline rows only — quote the
+  dimension tokens present in page text, snippet fuzzy-containment (`rapidfuzz` `partial_ratio`
+  of the **verbatim German** snippet vs page text ≥ 90; difflib ≥ 0.75 as no-dep fallback);
+  (2) LLM comparator for failing/borderline rows only — quote the
   exact source line or reject. `confirmed` pass; `corrected` take fixes; `rejected` → side
   csv + ONE repair round-trip, never silently dropped. Survivors keep
   `raw_source_snippet`+`source_page` (traceability end to end).
@@ -151,10 +155,12 @@ Concatenate in section order, document order within; `lv_id = LV%04d` globally (
 Stages: (1) rules **veto** — same unit, category compatibility, dimension equality
 (`DN\d+`, `\d+(\.\d+)?\s*[x×]\s*\d+`; Bauteilliste pages give extra dimension evidence for
 Ductwork); (2) fuzzy — `token_set_ratio` (rapidfuzz optional; `difflib` fine for 56 catalog
-rows × few hundred positions) over `description+model_hint` vs catalog `description+model`,
-manufacturer small bonus never hard filter (catalog = fictional Demo*; tender says
-`z.B Trox Hesco`); (3) LLM tie-break in the gray zone 0.55–0.85. Thresholds/flags: `>=0.85`
-auto; 0.55–0.85 `review_required=true`, `status=assumption_applied`; `<0.55` unmatched →
+rows × few hundred positions) over `description` vs catalog `description` **only**
+(concatenating model strings dilutes scores 84.2→68.1 — R4.4; model hints feed the LLM
+tie-break instead), manufacturer small bonus never hard filter (catalog = fictional Demo*;
+tender says `z.B Trox Hesco`); (3) LLM tie-break in the gray zone 60–80 (token_set scale).
+Thresholds/flags: `>=80` auto (plus dimension agreement); 60–80 `review_required=true`,
+`status=assumption_applied`; `<60` unmatched →
 `matched_product_id=null` + `insufficient_information|out_of_scope`; confident match onto a
 `supplier_package` row keeps its id, `status=supplier_quote_required` (golden's 6 rows).
 Vocabulary (materials/README.md): `calculated/supplier_quote_required/assumption_applied/
@@ -248,7 +254,9 @@ response_format, --lora, --lora-init-without-apply, /lora-adapters, batching cav
 vLLM docs.vllm.ai/en/latest/features/structured_outputs.html (guided_json removed v0.12.0);
 Ollama docs/api.md (format=schema); OpenAI rate-limits + structured-outputs guides;
 pypdf merging-pdfs.md (append page ranges). Round 3: rinaldiag.ch/bkp (BKP primary),
-server.py/_2 line-verified re-reads (R3.1).
+server.py/_2 line-verified re-reads (R3.1). Round 4: docs.vllm.ai structured_outputs page
+re-fetched (guided_json removal re-confirmed), PyPI JSON API (pypdf 6.20.0 / pdfplumber
+0.11.10 / rapidfuzz 3.14.6 all still latest, 2026-10-10).
 
 ## Round 2 - verification & changes
 
@@ -313,11 +321,15 @@ conflict; goal = §2-§3 buildable as-is.
   one position **per quantity row**; (2) normalize `Ø d cm → DN(10·d)` (10cm→DN100,
   12.5cm→DN125). Manufacturer hint lives in `Fabrikat z.B <mfr>`; model in `Typ z.B <model>`.
 - Header regex over all 202 pages (`pdftotext` per page, first non-blank line,
-  `(244\.\d{2})\s*(LA\d{2})?[^A-Za-z]*([A-Za-zÄÖÜäöü].*?)\s+Seite`) → 19 runs; with the
+  `(244\.\d{2})\s*(LA\d{2})?[^A-Za-z]*([A-Za-zÄÖÜäöü].*?)\s+Seite`) → **121 header hits**
+  forming **12 system-header runs + 5 interior headerless gaps** (75-76, 99-101, 131-132,
+  156-158, 182-183 = *Bauteilliste Lüftung* first lines, re-verified R4.2); with the
   inherit rule (headerless run inherits preceding system) collapses to exactly: 1-66 no
   system, **67-88 244.01, 89-118 244.02, 119-146 244.03, 147-173 244.04, 174-180 244.05,
   181-195 244.03 (2nd part), 196-199 244.06**, 200-202 none. Matches round-2 map; refines
-  181 (header present) vs 182-183 (Bauteilliste). The deterministic core of step1 is proven.
+  181 (header present) vs 182-183 (Bauteilliste). The deterministic core of step1 is proven
+  (round 4: re-executed, identical map — R4.2; the original "19 runs" count was not
+  reproducible and is superseded by 12+5).
 - PDF outline via pypdf: **2 bookmarks only** ("Ausschreibung BKP 244 Lüftungsanlagen
   260731" → p3; "Abgabe…Paket 1" → p201). No system anchors ⇒ page-range split is the only
   sane design; outline usable only as a title sanity check.
@@ -349,8 +361,11 @@ GLM-4.6, api_key_env: AUTOTENDER_LLM_API_KEY, temperature: 0.0, max_output_token
 max_retries: 3, retry_total_seconds: 120, request_timeout_seconds: 300, ui_settings:
 ../../web_ui/ui_settings.json}`; `sectioning: {max_pages_per_section: 30, window_pages: 20}`;
 `extraction: {concurrency: 4, requests_per_minute: 60, input_mode: text}`;
-`matching: {auto_threshold: 0.85, review_threshold: 0.55, llm_tiebreak: true}`.
-Env overrides: `AUTOTENDER_TENDER_PDF`, `AUTOTENDER_OUT_DIR` (mirror `AUTOTENDER_CALC_OUT`).
+`matching: {auto_threshold: 0.80, review_threshold: 0.60, llm_tiebreak: true}`
+(thresholds on the **token_set percent scale**, empirical — R4.4).
+Env overrides: `AUTOTENDER_TENDER_PDF`, `AUTOTENDER_OUT_DIR` (mirror `AUTOTENDER_CALC_OUT`),
+**`AUTOTENDER_LLM_BASE_URL`** (dev box has no local server — agent 2 R3.5; hosted-API dev
+point needs it) and optional `AUTOTENDER_UI_SETTINGS` (path override, agent-2 name).
 
 ### R3.3 Signatures (per script; all importable + `__main__` guard, _2 style)
 
@@ -414,8 +429,8 @@ def write_outputs(rows, out: Path) -> None                     # csv + tender_lv
   manufacturer_hint:str, model_hint:str, matched_product_id:str|None, install_code:str|None,
   price_source:"catalog"|"supplier_package"|None, match_confidence:float(2dp, real score),
   match_candidates:[{product_id:str, score:float}](top-3), match_method:"rules"|"fuzzy"|
-  "llm"|"none", review_required:bool, status:str, raw_source_snippet:str}]}` — money fields
-  stay out (`_2` owns them), unlike the todo's json sketch (deliberate).
+"llm"|"none", review_required:bool, status:str, raw_source_snippet:str}]}` — money fields
+stay out (`_2` owns them), unlike the todo's json sketch (deliberate).
 - `pipeline_report.json`: `{run_id, pdf_sha256, started_at/finished_at, settings_snapshot,
   llm:{model, base_url, lora_version, calls, tokens_in/out}, sections:{count, strategy},
   extraction:{extracted, confirmed, corrected, rejected, comparator_rules, comparator_llm},
@@ -463,8 +478,9 @@ verify_rules(pos, page):                     # free tier
     ok_p   = pos.source_page in section_pages
     ok_q   = all(tok in page for tok in tokens(pos.quantity_raw))          # "Stk","5"
     ok_d   = all(dim_literal in page for dim in parse_dims(pos))           # "10 x", "DN100"
-    ok_s   = SequenceMatcher(None, pos.raw_source_snippet, page).ratio() >= 0.55
-          or best_line_ratio >= 0.75            # snippet vs every page line, max
+    ok_s   = partial_ratio(pos.raw_source_snippet, page) >= 90   # rapidfuzz (installed);
+          # verbatim German snippet scores 100 on real rows vs <=43 for translated/fake
+          # text (agent 2 R3.4 + R4 cross-check); difflib ratio >= 0.75 as no-dep fallback
     return confirmed  if all four
            borderline if ok_p and one of ok_q/ok_d fails   # -> tier 2 llm
            rejected   otherwise
@@ -477,12 +493,13 @@ match_position(pos, catalog):
              and not (d.dn and pr.dn and d.dn != pr.dn)
              and not (d.wh and pr.wh and d.wh != pr.wh)
              and category_compatible(pos.category, pr.category)]
-    for pr in cands: s = 0.82*fuzzy(token_set_ratio(pos.desc+model, pr.desc+pr.model))
-                      + 0.10*attr_agree(d, pr) + 0.08*mfr_bonus(norm names equal)
-    top = max(cands, s)                     # rapidfuzz if importable else difflib
-    if s >= 0.85: accept; elif s >= 0.55: llm_tiebreak(top-3) or review; else: unmatched
+    for pr in cands: s = token_set_ratio(pos.desc_normalized_english, pr.desc)   # DESC ONLY
+                      # attr/mfr are NOT score weights (mfr ~always 0 vs Demo* catalog,
+                      # R4.4); they ride along as features for the LLM tie-break prompt
+    top = max(cands, s)                     # rapidfuzz (installed, verified R4) else difflib
+    if s >= 80: accept; elif s >= 60: llm_tiebreak(top-3) or review; else: unmatched
     if accepted pr.source_type == supplier_package: status=supplier_quote_required
-    review_required = (0.55 <= s < 0.85) or verdict == corrected or s is None
+    review_required = (60 <= s < 80) or verdict == corrected or s is None
 ```
 
 ### R3.7 Flag & error taxonomy (final enums)
@@ -520,8 +537,8 @@ mirror `run_steps` env pattern):
   `net_unit_cost_chf=0, material_cost_chf=0, price_source=None, status=row.get("status",
   "insufficient_information"), review_required=True`; else prefer `row["match_score"]` over
   hardcoded `MATCH_CONFIDENCE` and respect csv `review_required`/`status` when present.
-  Un-patched `_2` KeyError's on empty ids (verified L50) — the patch lets honest unmatched
-  rows into the cost baseline.
+  Un-patched `_2` KeyError's on empty ids (step1_material.py:41; round 4 executed: rc 1,
+  `KeyError: ''`) — the patch lets honest unmatched rows into the cost baseline.
 
 ### R3.9 Cross-module composition (what changed after reading _3/_4)
 
@@ -549,7 +566,174 @@ mirror `run_steps` env pattern):
 
 - Extraction prompt untested against a live LLM (no server this round); `validate.py`
   (78-171 golden subset) is the gate; block-merge mistakes on multi-quantity rows = top risk.
-- pdfplumber geometry tier optional/untested; `-layout` text only. SearxNG general engines
+- pdfplumber geometry tier optional but **no longer untested** — agent 2 R3.3 executed the
+  header-geometry + word-bucketing recipe (7/7 priced items on p78) and round 4
+  cross-executed it independently (7 qty rows incl. both golden p78 rows — R4.3); role =
+  deterministic row-recovery tier + comparator evidence, `pdftotext -layout` stays the
+  pages.jsonl source. SearxNG general engines
   still suspended (no blueprint impact). `_2` patch (R3.8) must be proposed, not silently
   shipped. 244.04 (27 pages ≈ 25 K tokens) is the biggest single call — `window_pages`
   chunking inside extract_section may be needed; decide on first run.
+
+## Round 4 - logical analysis, cross-report consistency, validation
+
+Inputs read: pair report `context_agent_2` (full re-read), `_2_Calculator` code
+(common.py / step1-4 / settings.yaml), `context_agent_5` (grep on calc.json consumers),
+`context_agent_3`/`_6` (skim). Everything below was **executed** on this machine
+(2026-10-10, Python 3.13.2) unless marked otherwise; scripts under /tmp/r4/.
+
+### R4.1 Executed validations (command -> result)
+
+1. **Import/env**: `import pypdf, pdfplumber, rapidfuzz` -> 6.20.0 / 0.11.10 / 3.14.6 all
+   import clean (agent 2's `--user` installs are on the shared interpreter). `pdftotext`,
+   `pdfseparate`, `pdfunite`, `gs` present; `qpdf` absent. PASS.
+2. **Section map re-execution** (R3.1 recipe, all 202 pages, first non-blank line,
+   `(244\.\d{2})\s*(LA\d{2})?[^A-Za-z]*([A-Za-zÄÖÜäöü].*?)\s+Seite`): **121 header hits**,
+   12 system-header runs + 5 headerless gaps (75-76, 99-101, 131-132, 156-158, 182-183 —
+   first line `Bauteilliste Lüftung` on each). Collapsed map **identical** to Round 2/3
+   (67-88/89-118/119-146/147-173/174-180/181-195(244.03 again)/196-199/200-202). PASS —
+   but R3.1's "19 runs" was NOT reproducible; corrected in place to 12+5.
+   Header texts captured: p147 = `244.04 Schulzimmer OG` (**no LA code — confirmed**),
+   p181 = `244.03 LA03 Küche/Abwaschen` (header present), p66 = `8. Leistungsverzeichnis`,
+   p200 = `9. Planliste`. PASS.
+3. **pdfplumber recipe cross-execution** (agent 2 R3.3 recipe on p78: default-strategy
+   `find_tables()` cells -> x-edges `[56.8, 76.6, 371.3, 399.0, 440.3, 488.3, 562.0]`,
+   `extract_words()` cropped to 80<top<780, bucketed by x-midpoint, rows by
+   `round(top/4)`): recovers **7 qty/unit rows** incl. `Grösse Ø 10 cm|Stk|5` and
+   `Ø 12.5 cm|Stk|6` = golden LV0001/LV0002. PASS (note: unit lands col idx 2, qty idx 3
+   of 6; my first attempt filtered the wrong columns — the bucketing itself is sound).
+4. **`_2` empty-id contract**: golden csv with `suggested_product_id=''` on one row ->
+   `step1_material.py` exits rc 1 with `KeyError: ''` (step1_material.py:41). PASS
+   (proves R3.7 `E_CATALOG_ID` and R3.8 patch necessity).
+5. **Extended-CSV end-to-end**: golden 12 cols + my 6 trailing extras (`local_id,
+   match_score, match_method, price_source, status, raw_source_snippet`) through the FULL
+   `_2` pipeline (`AUTOTENDER_CALC_OUT=/tmp/r4`): 22 positions, material 277,626.29 /
+   labour 95,073.83 / direct 372,700.12 / baseline 414,489.12 — **all golden numbers
+   reproduced**; only the `input` block differs (path/mode, expected). Extra columns are
+   harmless to `_2` AND to the ui check. PASS.
+6. **Matcher calibration over all 22 golden rows** (rapidfuzz 3.14.6; veto = unit +
+   category equality + DN/WxH mismatch drop; see R4.2/C1 for the outcome). PASS/DECISIVE.
+7. **Live external**: PyPI JSON API — pypdf 6.20.0, pdfplumber 0.11.10, rapidfuzz 3.14.6
+   all still latest (2026-10-10). docs.vllm.ai/en/latest/features/structured_outputs.html —
+   parameter is `structured_outputs: {"json": …}`; page states `guided_json` et al. "were
+   removed in v0.12.0". My §4 table current. PASS.
+
+### R4.2 Contradiction matrix vs pair report (agent 2) — resolutions
+
+| # | Topic | agent 1 (this report, pre-R4) | agent 2 | Resolution (evidence) |
+|---|---|---|---|---|
+| C1 | Matcher scoring/thresholds | composite `0.82*fuzzy+0.10*attr+0.08*mfr`, auto ≥0.85 / review 0.55–0.85 | token_set ≥80 + dim-agree auto, 60–80 review, <60 no-match (r3 executed on 6 rows) | **Agent 2 wins, now proven on all 22**: composite auto-accepts only **2/22** — mfr bonus is ~always 0 (fictional `Demo*` catalog vs real hints `Trox Hesco`) and 0.82 max fuzzy weight cannot reach 0.85. Veto-first + desc-only token_set: **top-1 correct 22/22**, ≥80 accepts **20/22** (LV0020 79.2, LV0021 54.5 → review; both still top-1-correct). Fixed R3.2/R3.6/§3 in place; attr/mfr demoted to LLM tie-break features. |
+| C2 | Fuzzy input text | `pos.desc+model` vs `catalog.desc+model` (R3.6) | description-only (r3 table) | **Desc-only**: concatenation drops LV0001 84.2→68.1 (still top-1 only because the veto carries it) and wrongly widens the gray zone. Fixed in place. |
+| C3 | pdfplumber status | R3.10 "optional/untested" | r3 EXEC: recipe recovers 7/7 p78 items | Stale wording fixed in place; independently re-executed (R4.1.3). Architecture role unchanged: deterministic tier + comparator evidence; `pdftotext -layout` stays the pages.jsonl source. |
+| C4 | vLLM structured output | `guided_json` REMOVED v0.12.0 → `structured_outputs` | §4 table still says "vLLM `guided_json`" | **My claim stands** (live re-fetch, R4.1.7). Agent 2's table row is stale — flagged for their next round; `llm_client.py` must send `structured_outputs` (or OpenAI `response_format`) and never rely on `guided_json`. |
+| C5 | LLM base URL wiring | settings `llm.base_url` fixed `http://127.0.0.1:8080/v1`; env overrides only pdf/out-dir | env `AUTOTENDER_LLM_BASE_URL` required (r3 probe: no local server exists, ports closed) | Agent 2's executed reality wins: env override added to R3.2 in place. Without it dev cannot point the stdlib client at a hosted API. |
+| C6 | ui_settings path mechanism | settings.yaml key + `AUTOTENDER_INPUT_LORA` | env `AUTOTENDER_UI_SETTINGS` | Composed (not conflicting): settings.yaml holds the default path; `AUTOTENDER_UI_SETTINGS` overrides the path (agent-2 name adopted); `AUTOTENDER_INPUT_LORA` still forces an adapter id. |
+| C7 | Embeddings tier | optional (torch dep) | unnecessary if descriptions English; mandatory if German | Consistent — both conditional. The **English-description extraction contract** is the load-bearing piece (raw German vs English catalog tops out at token_set 27–33). |
+| C8 | Snippet verification metric | SequenceMatcher ≥ 0.55 / best-line ≥ 0.75 | rapidfuzz `partial_ratio` ≥ ~90 (verbatim German 100 real vs ≤37 fake) | Unified on `partial_ratio ≥ 90` (rapidfuzz now installed + import-verified); difflib only as no-dep fallback. Fixed §3/R3.6 in place. |
+| C9 | Catalog size | 56 data rows | r2 said 57, r3 corrected to 56 | Both 56 now — re-counted R4 (`wc -l` 57 incl. header). No conflict remains. |
+
+Agent 2 internal inconsistency noted (for their next round, not fixable here): their §5
+"Recommendation (r2)" still prints the old `0.35/0.35/0.2/0.1` hybrid while their r3
+empirics use token_set 80/60 — the r3 numbers are the executed ones and are what C1
+adopts.
+
+### R4.3 Internal logic audit — fixes applied in place
+
+- **I1 (wrong line cite)**: R3.8 said KeyError "verified L50" — actual code is
+  `step1_material.py:41` (`product = catalog[row["suggested_product_id"]]`); now
+  execution-proven too. Fixed.
+- **I2 (irreproducible count)**: R3.1 "19 runs" → replaced by reproducible 121 hits /
+  12 system runs + 5 gaps; collapsed map unchanged (re-executed, R4.1.2). Fixed.
+- **I3 (stale status)**: R3.10 "pdfplumber … untested" → tested (agent 2 R3.3 + my R4.1.3).
+  Fixed.
+- **I4 (miscalibrated constants used inconsistently across my own sections)**: §3 Todo-5
+  and R3.2/R3.6 mixed the 0.85/0.55 composite with veto-first logic; the composite is
+  empirically unreachable (C1). All three places now say 80/60 on the token_set scale,
+  desc-only fuzzy. Fixed.
+- **I5 (metric inconsistency)**: comparator used SequenceMatcher while the matcher used
+  rapidfuzz — now both rapidfuzz-first with difflib fallback (C8). Fixed.
+- **I6 (env gap)**: R3.2 env-override list missing `AUTOTENDER_LLM_BASE_URL` (needed per
+  agent 2's no-local-server probe). Fixed.
+- No circular dependencies found in the step plan (§7 ordering still valid: regex proven
+  before LLM confirm; matcher rewrite before `_2` pickup).
+
+### R4.4 Cross-module contract checks (code-cited)
+
+- **Columns `_2` actually reads** from the positions csv — `step1_material.py`:
+  `suggested_product_id` (L41), `quantity` (L42), `lv_id` (L46), `source_page` via
+  `int()` (L47), `unit` (L51). That is exactly `REQUIRED_CSV_COLUMNS` (server.py:42,
+  presence-only). `system/category/description/manufacturer_hint/model_hint/
+  expected_install_code/ground_truth_status` and ALL extra columns are ignored by `_2`.
+  My final csv (golden 12 in order + trailing extras) satisfies the contract; extras
+  proven harmless end-to-end (R4.1.5). PASS.
+- **Prod pickup**: settings.yaml `prod.positions_dir: ../_1_AI_InputProcessing/output`,
+  `positions_pattern: "tender_lv_positions*.csv"`, newest by `(mtime, name)`
+  (common.py:57-64) — my `output/tender_lv_positions.csv` matches the glob. PASS.
+- **match_confidence survival into calc.json**: it survives, but as the HARDCODED
+  constant — `step1_material.py:55` writes `MATCH_CONFIDENCE[product["source_type"]]`
+  (common.py:30: catalog 0.92 / supplier_package 0.72); csv `match_score`,
+  `review_required`, `status` are NOT read (review_required comes from the CATALOG's
+  `supplier_quote_required`, L44+56; status is computed, L57). Execution (R4.1.5):
+  extended csv with `match_score: 0.84` still yields `match_confidence: 0.92` in
+  calc.json. ⇒ Agent 5's "real match_score is the single blocking enabler" (their L869)
+  is CONFIRMED at code level: the R3.8 `_2` patch is the only route to real scores in
+  `_4`'s value-weighted mean (agent 5 consumes `match_confidence`, `review_required`,
+  `price_source`, `status`, `direct_position_cost_chf` from calc.json — their L126/735).
+- **calc.json field ceiling**: `step3_combine.py` GOLDEN_FIELD_ORDER (L11-16) + step2
+  extras = position fields end at `…price_source, match_confidence, review_required,
+  status` (+`labour_role`, `hourly_rate_chf`). There is **no `description`, `system`,
+  `match_candidates` or `match_score` in calc.json** — those reach downstream modules
+  only via `tender_lv_output.json` (R3.4) + the optional
+  `GET /api/tenders/<id>/input_processing` endpoint (R3.8). R3.9's "match_candidates
+  retained" wording is correct for `_1`'s artifacts but must NOT be read as a calc.json
+  promise (noted here to pre-empt `_4` misreading).
+- **web_ui line cites re-verified**: REQUIRED_CSV_COLUMNS L42, BASE_MODELS L97, TENDERS
+  L31, `run_steps` L217-227, `calc_tender` L230-238 (passes `positions_path(tid)` to
+  step1 as argv — matches R3.8 step 3), `_upload` pdf branch L1090-96, route slots
+  `parts[3] in {rename, upload, recalc, values}` L1027-1045, settings-update auto-select
+  L1007 (`t["selected"] = version`). All PASS.
+
+### R4.5 New finding — `system` column convention (validate.py blocker if ignored)
+
+Golden `system` values are **ASCII-folded** and carry a **synthetic LA code**:
+`244.04 LA04 Schulzimmer OG` (golden) vs PDF header `244.04 Schulzimmer OG` (p147,
+executed); `244.01 LA01 Nebenraeume UG` vs header `Nebenräume` (ä→ae). Rules for
+step1/step4 so string equality with golden holds: `system = "<244.NN> <LAxx | LA
+synthesized from NN> <ASCII-folded title>"`; `validate.py` should additionally tolerate
+comparison on the numeric subsystem code alone. Added here because R3.4/R3.5 did not
+specify the convention.
+
+### R4.6 Updated recommendations (deltas to §2/§3/R3)
+
+1. Matcher (supersedes R3.6 scoring): veto (unit + category + DN/WxH) → `token_set_ratio`
+   on **normalized English descriptions only** → auto ≥80, LLM tie-break 60–80, no-match
+   <60. Expected golden behavior: 20/22 auto, 2 honest reviews, **0 wrong accepts**
+   (executed). attr/manufacturer signals move into the tie-break prompt text.
+2. Single-candidate categories (Support=1, Damper=1 product) can score <60 while being
+   trivially "correct" (LV0021 ts 54.5, only candidate in category) — allow auto-accept
+   when exactly one candidate survives the veto AND ts ≥ 50, else review. Decide in
+   `validate.py` tuning; criterion = 22/22 id agreement with ≤2 review flags.
+3. `llm_client.py` must read `base_url` from `AUTOTENDER_LLM_BASE_URL` env first
+   (dev = hosted API; prod = llama-server), send vLLM `structured_outputs` / OpenAI
+   `response_format` shapes per §4 — never `guided_json`.
+4. pdfplumber recipe (R4.1.3) promoted to a named component: `common.py::bucket_rows()`
+   for deterministic qty-row recovery on Bauteilliste/LV pages — feeds comparator
+   evidence and the no-LLM `--dry-run` path; cm→mm + `Ø d cm → DN(10·d)` post-pass stays
+   mandatory (R3.1 rules).
+5. R3.8 `_2` patch unchanged but now execution-justified twice (R4.1.4 + R4.1.5); its
+   `match_score` passthrough is the single blocking integration item (matches agent 5).
+
+### R4.7 Remaining open questions
+
+- Threshold fine-tuning on REAL extracted descriptions (the 22-row calibration uses the
+  golden's hand-normalized English; live extraction noise will shift scores down) —
+  `validate.py` 22/22 id-agreement gate decides.
+- Block segmentation across full 244.02/244.04 runs (spot-checked 67/68/78/119/147 only);
+  the pdfplumber `bucket_rows()` tier may need per-system x-edge re-derivation (header
+  geometry is stable per document but Bauteilliste pages have no ruled header — bucket
+  edges must be inherited there).
+- LLM extraction prompt still untested against a live server (no inference stack on this
+  box — agent 2 R3.5); `llm_client.py --selftest` + one hosted-API smoke run remain the
+  first implementation milestone.
+- Agent 2's stale `guided_json` row (C4) and their r2-vs-r3 matcher formula inconsistency
+  are flagged for THEIR round-4 pass; nothing in my blueprint depends on them.
