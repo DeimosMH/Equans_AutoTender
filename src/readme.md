@@ -15,7 +15,7 @@
 └── web_ui
 ```
 
-## main script:
+## main script
 
 `run.sh` - install all dependencies, create venv and start autoTender.py via venv;
 `autoTender.py` should run whole project step by step.
