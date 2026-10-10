@@ -17,8 +17,10 @@ It does not autonomously submit offers. `materials/README.md` defines the challe
   project parameters and per-tender `AUTOTENDER_CALC_OUT` output.
 - `_3_Prediction`: implemented public collection, supervised dataset preparation,
   persisted preparation jobs, provider handoff and heuristic bid scenarios.
-- `_4_RecursiveImprovement`: research/todo only. Future verified debriefs feed own-bid
-  labels and measured productivity; there is no automatic retraining/deployment loop yet.
+- `_4_RecursiveImprovement`: implemented immutable submission capture, verified
+  outcome/debrief revisions, public evidence collection, reports, own-bid and
+  measured-productivity feedback, monitoring and candidate review. Remote training
+  and adapter deployment remain pending; no automatic model switch occurs.
 - `web_ui`: localhost stdlib HTTP server; persistent independent tender folders,
   positions CSV upload, editable calculations, margin/waste/overhead controls,
   PDF/HTML/DOCX offers and settings. Start `python3 src/web_ui/server.py 8080`.
@@ -147,7 +149,8 @@ Golden scenario and calculator regression checks, offline collection/dataset/job
 tests, Python compilation, JavaScript syntax and localhost API smoke checks are
 used for this implementation. See `_3_Prediction/readme.md` for commands.
 No empirical calibrated predictor, actual trained weights, full PDF extraction,
-recursive debrief implementation or remote training provider is claimed.
+remote training provider is claimed. The recursive debrief workflow is implemented;
+its feedback remains evidence-gated.
 
 ## Completed workspace data and checks
 
@@ -200,3 +203,33 @@ with regression coverage. Moved-corpus snapshots can resolve by digest under
 test suite. Fifteen tests, both golden regressions, Python compilation, JavaScript
 syntax and diff whitespace checks passed before merging into local main.
 Remote refresh could not run because GitHub HTTPS authentication is unavailable.
+
+## Recursive improvement implementation
+
+`_4_RecursiveImprovement/readme.md` defines API/CLI payloads and persistence.
+Record submission before outcome: snapshot includes calculation, parameters, bid,
+actual margin, frozen probability and hash. Subsequent estimates cannot rewrite it.
+Verified won/lost records with evidence and prospective capture export directly into
+`_3` task uploads. Revisions replace stable records; revocation/withdrawal removes
+old supervision. Backdated submissions and observations preceding capture cannot
+train or measure predictive performance. Public awards never label our participation.
+
+Confirmed reasons remain evidence-attributed; higher bid price and missing supplier
+quotes are descriptive findings, not invented explanations for losing. Missing
+evidence produces an actionable report (Markdown/HTML/PDF). User-confirmed comparable
+CHF competitor prices feed medians. Measured productivity exports separate evidence
+and does not replace active parameters. Changes have locked atomic persistence and
+revision/audit artifacts; Unix file locking is required.
+
+Settings monitors verified frozen forecasts: Brier, signed error p-y, calibration
+bins, competitor summaries and drift review hints. Candidate scores need verified
+provenance and held-out chronology, ten paired records and both outcome classes.
+Sample-mean Brier noninferiority margin .02 recommends review only; no statistical
+guarantee or automatic deployment is claimed. Evaluation reviews are archived.
+Existing prepared datasets remain historical artifacts after label correction;
+prepare fresh data before future training. The current heuristic remains fallback.
+
+Validation adds 20 `_4` tests to the 15 existing `_3` tests: immutable and mutated
+snapshots, custom bid probability/margin, outcome revisions/revocation, chronology,
+verified evidence, public collection boundaries, report escaping, concurrent capture,
+candidate/monitoring gates and end-to-end API/report/export/productivity paths.

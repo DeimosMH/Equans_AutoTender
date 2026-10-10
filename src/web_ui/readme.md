@@ -118,3 +118,12 @@ removes the directory.
 
 Preparation can reuse the archived public corpus and sponsor matching examples
 through the checked **Use collected data and sponsor examples** option.
+
+## Outcome feedback
+
+Calculated tenders include a **Bid outcome and learning** panel. Record submission
+before outcome, confirm evidence and record debrief reasons or comparable competitor
+prices. Reports download as Markdown/HTML/PDF. Verified own bid outcomes and measured
+productivity feed the appropriate `_3` task uploads; they do not train automatically.
+Settings includes diagnostic monitoring and held-out candidate evaluation.
+See [recursive improvement documentation](../_4_RecursiveImprovement/readme.md).

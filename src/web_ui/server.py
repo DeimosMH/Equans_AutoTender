@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import zipfile
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +37,11 @@ PREDICTION_DIR = BASE.parent / "_3_Prediction"
 sys.path.insert(0, str(PREDICTION_DIR))
 from dataset import read_upload
 from jobs import JobStore
+FEEDBACK_DIR = BASE.parent / "_4_RecursiveImprovement"
+sys.path.insert(0, str(FEEDBACK_DIR))
+import core as feedback_core
+import monitoring as feedback_monitoring
+import productivity as feedback_productivity
 PREPARATION_JOBS = JobStore(BASE / "training_jobs", PREDICTION_DIR / "data", BASE.parent.parent / "materials")
 
 # reuse the calculator's loaders/rounding so paths and maths stay in one place
@@ -290,7 +296,8 @@ def apply_edits(tid: str, edits: dict) -> dict:
 
     calc_path(tid).write_text(json.dumps(calc, indent=2) + "\n")
     run_steps(calc_path(tid), [("step3_combine.py", []), ("step4_project.py", [])])
-    meta["status"] = "calculated"
+    if meta.get("status") not in ("submitted", "won", "lost", "withdrawn"):
+        meta["status"] = "calculated"
     save_meta(meta)
     result = json.loads(calc_path(tid).read_text())
     result["_edited_positions"] = touched
@@ -953,6 +960,34 @@ class Handler(BaseHTTPRequestHandler):
                 settings = load_ui_settings()
                 settings["preparation_jobs"] = PREPARATION_JOBS.list()
                 self._json(200, settings)
+            elif url.path == "/api/feedback/monitoring":
+                self._json(200, feedback_monitoring.monitor_tenders(TENDERS))
+            elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] in ("feedback", "postmortem"):
+                tid = parts[2]
+                if not tid_valid(tid):
+                    raise ValueError("invalid tender id")
+                load_meta(tid)
+                folder = TENDERS / tid
+                if parts[3] == "feedback":
+                    self._json(200, feedback_core.overview(folder))
+                else:
+                    fmt = parse_qs(url.query).get("format", ["md"])[0]
+                    if fmt not in ("md", "html", "pdf"):
+                        raise ValueError("report format must be md, html or pdf")
+                    feedback_core.analyze(folder)
+                    report = folder / "feedback" / "reports" / ("postmortem." + ("md" if fmt == "pdf" else fmt))
+                    content = report.read_bytes()
+                    if fmt == "pdf":
+                        pages, page, y = [], Page(), 785
+                        for line in content.decode().splitlines():
+                            for part in _wrap(line, "F1", 10, 510):
+                                if y < 50:
+                                    pages.append(page); page, y = Page(), 785
+                                page.text(40, y, part, size=10); y -= 14
+                        pages.append(page)
+                        content = build_pdf(pages)
+                    self._send(200, content, "application/pdf" if fmt == "pdf" else "text/html; charset=utf-8" if fmt == "html" else "text/markdown; charset=utf-8",
+                               {"Content-Disposition": f'attachment; filename="postmortem.{fmt}"'})
             elif parts[:2] == ["api", "tenders"] and len(parts) == 3:
                 tid = parts[2]
                 meta = load_meta(tid)
@@ -1017,6 +1052,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, pdf, "application/pdf", offer_disp)
             else:
                 self._json(404, {"error": f"unknown path {url.path}"})
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
         except FileNotFoundError:
             self._json(404, {"error": "tender not found"})
         except Exception as e:
@@ -1026,7 +1063,38 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         parts = [p for p in url.path.split("/") if p]
         try:
-            if parts[:2] == ["api", "tenders"] and len(parts) == 2:
+            if url.path == "/api/feedback/evaluate":
+                result = feedback_monitoring.evaluate_candidate(self._body_json().get("records", []))
+                result["review_id"] = uuid.uuid4().hex
+                feedback_core._atomic(FEEDBACK_DIR / "output" / "evaluations" / (result["review_id"] + ".json"), result)
+                self._json(200, result)
+            elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] in ("submission", "outcome", "gather-evidence", "export-feedback", "productivity-feedback"):
+                tid, action = parts[2], parts[3]
+                if not tid_valid(tid):
+                    raise ValueError("invalid tender id")
+                meta = load_meta(tid)
+                folder, body = TENDERS / tid, self._body_json()
+                if action == "submission":
+                    calc = json.loads(calc_path(tid).read_text())
+                    prediction.enrich(calc, calc_common.load_params())
+                    result = feedback_core.capture_submission(folder, calc, calc_common.load_params(), body)
+                    meta["status"] = "submitted"
+                    save_meta(meta)
+                elif action == "outcome":
+                    result = feedback_core.record_outcome(folder, body)
+                    meta["status"] = body["outcome"]
+                    save_meta(meta)
+                    feedback_core.analyze(folder)
+                    feedback_core.export_feedback(folder, UPLOADS / "lora_data")
+                elif action == "gather-evidence":
+                    result = feedback_core.gather_evidence(folder, body.get("urls", []))
+                    feedback_core.analyze(folder)
+                elif action == "productivity-feedback":
+                    result = feedback_productivity.record_measurement(folder, UPLOADS / "lora_data", calc_common.load_params(), body)
+                else:
+                    result = feedback_core.export_feedback(folder, UPLOADS / "lora_data")
+                self._json(200, {"ok": True, "result": result, "feedback": feedback_core.overview(folder)})
+            elif parts[:2] == ["api", "tenders"] and len(parts) == 2:
                 self._json(201, create_tender(self._body_json().get("name", "")))
             elif parts[:2] == ["api", "settings"] and len(parts) == 3 and parts[2] == "update":
                 body = self._body_json()
@@ -1096,6 +1164,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "calc": result})
             else:
                 self._json(404, {"error": f"unknown path {url.path}"})
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
         except FileNotFoundError:
             self._json(404, {"error": "tender not found"})
         except Exception as e:
@@ -1130,14 +1200,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             positions_path(tid).write_bytes(body)
             out = calc_tender(tid)
-            meta.update(status="calculated", uploaded_file=name)
+            meta.update(uploaded_file=name)
+            if meta.get("status") not in ("submitted", "won", "lost", "withdrawn"):
+                meta["status"] = "calculated"
             save_meta(meta)
             n = len(json.loads(calc_path(tid).read_text())["position_results"])
             self._json(200, {"ok": True,
                              "message": f"{name}: calculated {n} positions from {len(rows)} rows - {out}"})
         elif ext == ".pdf":
             (TENDERS / tid / "tender.pdf").write_bytes(body)
-            meta.update(status="pdf_stored", uploaded_file=name)
+            meta.update(uploaded_file=name)
+            if meta.get("status") not in ("submitted", "won", "lost", "withdrawn"):
+                meta["status"] = "pdf_stored"
             save_meta(meta)
             self._json(200, {"ok": True,
                              "message": f"{name} stored; AI input processing (_1_AI_InputProcessing) "
