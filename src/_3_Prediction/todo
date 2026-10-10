@@ -1,0 +1,5 @@
+web scraping of old tenders data:
+which ones won - and why
+which ones loose - and why
+-> lora model for success for our calculations (with selected `profit` on slider)
+on slider could be selected `possible` min, mid and max if such lora is implemented

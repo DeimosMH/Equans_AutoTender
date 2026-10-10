@@ -1,0 +1,22 @@
+1. Calculate material cost
+
+Quantity x net cost x (1 + waste percentage)
+
+output: `Material cost per item` in `calc.json`
+
+2. Calculate labour cost
+
+Rule hours x quantity x factors x hourly rate
+
+output: `Labour cost per item` in `calc.json`
+Hours, labour role, hourly rate and cost
+
+3. Combine item costs
+
+Costed tender items
+output: `Material, labour, direct cost and review status` in `calc.json`
+
+4. Build project cost
+
+Sum item costs; add services and allowances once.
+output: `item costs; add services and allowances` in `calc.json`

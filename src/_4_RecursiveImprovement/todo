@@ -1,0 +1,3 @@
+tender didn't pass -> attempt of determining why
+-> success of information gathering -> update estimation of success model (allow fallback/switch)
+-> fail of information gathering -> generate report

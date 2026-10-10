@@ -1,0 +1,65 @@
+1. LLM with long context window: take `tender` as an input, divide it by logical sections (pages from - to `json sections`) 
+
+output example:
+
+```json
+{
+    "number_of_sections": 3,
+    "sections" :
+    [
+        {
+            "num": 1,
+            "page_from": 1,
+            "page_to": 18, 
+            "desc": "ai description of section 1",
+        },
+        {
+            "num": 2,
+            "page_from": 18,
+            "page_to": 25, 
+            "desc": "ai description of section 2",
+        },
+        {
+            "num": 3,
+            "page_from": 25,
+            "page_to": 40, 
+            "desc": "ai description of section 2",
+        }
+    ]
+}
+```
+
+2. (script?) Input (pdf) is cut into different sections; input: `tender`, `json sections`; output: `tender_<num_x>.pdf`
+
+3. Each section is feed into parallel <agent> which write `lv position` for the section;
+input: `tender_<num_x>.pdf` into `llm`; output: `tender_lv_positions_<num_x>.csv` (for each <agent> should be <comparator agent> which verify each newly created position in `tender_lv_positions_<num_x>.csv` if it actually exist in `input`);
+
+4. (script?) Merge `tender_lv_positions_<num_x>.csv` into `tender_lv_positions.csv` (`like in materials/example_lv_positions.csv`)
+
+5. Match `tender_lv_positions.csv` and validate existence each of item in `materials/catalog.csv` and create `tender_lv_ouput.json` (similar to `materials/expected_output_example.json`)
+
+*Compare descriptions, dimensions and manufacturers.
+
+part of json output example
+
+```json
+
+    {
+      "lv_id": "LV0006",
+      "source_page": 80,
+      "matched_product_id": "P-SIL-001",
+      "install_code": "SILENCER",
+      "quantity": 4.0,
+      "unit": "pc",
+      "net_unit_cost_chf": 2600.0,
+      "material_cost_chf": 10816.0,
+      "adjusted_install_hours": 11.24,
+      "labour_cost_chf": 1078.56,
+      "direct_position_cost_chf": 11894.56,
+      "price_source": "supplier_package",
+      "match_confidence": 0.72,
+      "review_required": true,
+      "status": "supplier_quote_required"
+    },
+
+```
