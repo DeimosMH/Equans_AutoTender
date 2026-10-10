@@ -1,1 +1,3 @@
-# Equans AutoTender
+# Tendif
+
+Equans Automatic Tender Processing System
