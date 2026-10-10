@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 
-TASKS = ('input_processing', 'productivity_factors', 'win_ratio')
+TASKS = ('input_processing', 'productivity_factors', 'win_ratio', 'market_extraction')
 # Only information available when bidding can be provided to win prediction.
 BID_FIELDS = {'sector', 'canton', 'procedure', 'cpv_codes', 'estimated_value_chf',
               'bid_amount_chf', 'cost_amount_chf', 'margin_pct', 'evaluation_criteria',

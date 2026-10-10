@@ -13,7 +13,7 @@ from training import write_training_request
 
 ROOT = Path(__file__).resolve().parents[2]
 
-def prepare(materials, output, base_model):
+def sponsor_examples(materials):
     pdf = materials/'BKP_244_LV_Lueftung_260804.pdf'
     with (materials/'example_lv_positions.csv').open(newline='') as file:
         rows = list(csv.DictReader(file))
@@ -28,6 +28,12 @@ def prepare(materials, output, base_model):
             'target': {'suggested_product_id':row['suggested_product_id'],
                        'install_code':row['expected_install_code'],
                        'status':row['ground_truth_status']}})
+    return examples
+
+
+def prepare(materials, output, base_model):
+    pdf = materials/'BKP_244_LV_Lueftung_260804.pdf'
+    examples = sponsor_examples(materials)
     output.mkdir(parents=True, exist_ok=True)
     (output/'sponsor_matching.jsonl').write_text(''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in examples))
     manifest = prepare_dataset(examples,'input_processing',output,base_model)

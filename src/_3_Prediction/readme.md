@@ -88,3 +88,19 @@ python3 src/_2_Calculator/validate.py
 ```
 
 The repository-wide authoritative handoff is [PROJECT_CONTEXT.md](../../PROJECT_CONTEXT.md).
+
+## Integrated CLI and existing sources
+
+`python3 src/autoTender.py calculate --positions <csv> --output <json>` runs all
+four calculator steps followed by prediction. `--factors <json-file>` supplies
+productivity overrides.
+
+`python3 src/autoTender.py prepare --task market_extraction --base-model <model-id>`
+prepares the archived real corpus through tracked jobs without network access.
+The same workflow is available in Settings → Public notice extraction.
+“Use collected data and sponsor examples” is checked by default; uncheck it to
+exclude archived records and the sponsor's matching examples. The CLI equivalent
+is `--exclude-existing`. Add `--url <simap-project-url>` for fresh bounded collection.
+Use `--jobs src/web_ui/training_jobs` to make CLI job artifacts appear in Settings.
+The sponsor input-processing dataset remains one project and does not acquire
+win/loss labels simply because the public corpus is included.

@@ -678,6 +678,7 @@ const TASKS = [
   { key: "input_processing", label: "Input processing" },
   { key: "productivity_factors", label: "Productivity factors" },
   { key: "win_ratio", label: "Win-ratio prediction" },
+  { key: "market_extraction", label: "Public notice extraction" },
 ];
 
 async function loadSettings() {
@@ -759,6 +760,7 @@ function renderSettings() {
       <button class="up-data">Upload data</button>
       <input type="file" class="up-file" accept=".jsonl" hidden>
       <input type="text" class="up-links" placeholder="provide links for tenders or tender data">
+      <label><input type="checkbox" class="up-existing" checked> Use collected data and sponsor examples</label>
       <button class="up-go">Prepare dataset</button>
       <span class="rowmsg"></span>
     </div>`).join("");
@@ -814,7 +816,8 @@ function renderSettings() {
       try {
         const res = await fetch("/api/settings/update", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task, links: row.querySelector(".up-links").value }),
+          body: JSON.stringify({ task, links: row.querySelector(".up-links").value,
+            include_existing: row.querySelector(".up-existing").checked }),
         });
         const j = await res.json();
         if (!res.ok || !j.ok) throw new Error(j.error || "Preparation failed");

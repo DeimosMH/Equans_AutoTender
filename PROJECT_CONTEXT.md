@@ -22,7 +22,8 @@ It does not autonomously submit offers. `materials/README.md` defines the challe
 - `web_ui`: localhost stdlib HTTP server; persistent independent tender folders,
   positions CSV upload, editable calculations, margin/waste/overhead controls,
   PDF/HTML/DOCX offers and settings. Start `python3 src/web_ui/server.py 8080`.
-- `src/autoTender.py`: empty placeholder, not a working pipeline orchestrator.
+- `src/autoTender.py`: implemented CLI with `calculate` (four calculator steps plus
+  prediction) and `prepare` (tracked task datasets, existing corpus/sponsor sources).
 
 Dependencies: Python with PyYAML for the calculator; prediction, collection,
 preparation and UI otherwise use the standard library. Optional local training
@@ -161,8 +162,32 @@ recursive debrief implementation or remote training provider is claimed.
   preserves the supplied PDF hash and avoids inventing extraction supervision.
   Spot checking physical PDF page 78 shows equipment different from the CSV's
   page-78 valve rows; review page alignment before using PDF pages as labels.
-- 11 offline collection/dataset/job tests passed, both golden regressions passed,
+- 13 offline collection/dataset/job tests passed, both golden regressions passed,
   Python compilation and JavaScript syntax passed. Isolated localhost API smoke
   test covered settings, async jobs, artifact downloads, tender creation, full
   recalculation and overridden-baseline win curves. Optional trainer preflight
   passed on the real public extraction training/validation files.
+
+## Follow-up implementation
+
+The Settings page includes a separate Public notice extraction task and a checked
+“Use collected data and sponsor examples” option. Existing market records are
+merged/deduplicated with optional fresh collection; raw source hashes are verified.
+Sponsor matching examples are loaded directly for Input processing without manual
+re-upload. Public evidence never fills own-bid outcomes or measured productivity.
+Two real persisted UI jobs were prepared from gathered workspace data: notice
+extraction ready for training, sponsor matching blocked on held-out projects.
+No external provider is needed for these preparation and calculator flows.
+
+CLI examples from repository root:
+
+```sh
+python3 src/autoTender.py calculate --output /tmp/calculation.json
+python3 src/autoTender.py prepare --task market_extraction --base-model <provider-model-id>
+```
+
+Use `--exclude-existing` to prepare only uploaded data/new URL sources; use
+`--jobs src/web_ui/training_jobs` to expose CLI-prepared artifacts in Settings.
+The CLI returns nonzero on preparation failure; a blocked dataset remains a
+valid preparation result and carries explicit blockers. Remote upload/training
+and inference remain pending the actual endpoint contract.

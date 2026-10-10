@@ -9,7 +9,9 @@ from dataset import TASKS, prepare_dataset, read_upload
 from training import write_training_request
 
 class JobStore:
-    def __init__(self, root):
+    def __init__(self, root, corpus_dir=None, materials_dir=None):
+        self.corpus_dir = Path(corpus_dir) if corpus_dir else None
+        self.materials_dir = Path(materials_dir) if materials_dir else None
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -42,12 +44,12 @@ class JobStore:
             raise ValueError('unknown artifact')
         return self.root/job_id/'dataset'/name
 
-    def start(self, task, base_model, links, upload_dir):
+    def start(self, task, base_model, links, upload_dir, include_existing=False):
         if task not in TASKS:
             raise ValueError('unknown task')
         job = {'id':'j'+uuid.uuid4().hex,'task':task,'base_model':base_model,
                'created_at':datetime.now(timezone.utc).isoformat(),'status':'queued','links':links,
-               'artifacts':[], 'error':None}
+               'artifacts':[], 'error':None, 'include_existing':bool(include_existing)}
         self._save(job)
         threading.Thread(target=self._run,args=(job, Path(upload_dir)),daemon=True).start()
         return job
@@ -56,13 +58,25 @@ class JobStore:
         try:
             directory = self.root/job['id']
             records, public_records, collection_errors, upload_sources = [], [], [], []
+            if job.get('include_existing') and self.corpus_dir:
+                for name in ('market_awards.jsonl', 'public_tenders.jsonl'):
+                    path = self.corpus_dir/name
+                    if path.is_file():
+                        public_records.extend(json.loads(line) for line in path.read_text().splitlines() if line.strip())
+            if job.get('include_existing') and job['task'] == 'input_processing' and self.materials_dir:
+                from prepare_sponsor import sponsor_examples
+                records.extend(sponsor_examples(self.materials_dir))
+                for name in ('example_lv_positions.csv', 'catalog.csv', 'BKP_244_LV_Lueftung_260804.pdf'):
+                    source = self.materials_dir/name
+                    upload_sources.append({'file':name,'sha256':hashlib.sha256(source.read_bytes()).hexdigest(), 'source':'sponsor'})
             if job['links'].strip():
                 job['status'] = 'collecting'; self._save(job)
                 from collect.simap import collect_sources
                 result = collect_sources(job['links'].split(), directory/'collection',
                     searches=[('Lüftung','de'), ('HLK','de'), ('ventilation','fr')], max_pages=2, max_awards=20)
-                public_records = result.get('records', [])
+                public_records.extend(result.get('records', []))
                 collection_errors = result.get('errors', [])
+            public_records = list({r['publication_id']:r for r in public_records}.values())
             job['status'] = 'preparing'; self._save(job)
             for path in sorted(uploads.glob(job['task']+'_*')):
                 raw_upload = path.read_bytes()
@@ -83,7 +97,10 @@ class JobStore:
                         raw_path = candidate if candidate.is_file() else raw_path
                     if not raw_path.is_file():
                         continue
-                    source = json.loads(raw_path.read_text())
+                    raw = raw_path.read_bytes()
+                    if hashlib.sha256(raw).hexdigest() != provenance.get('sha256'):
+                        raise ValueError('Public source snapshot hash mismatch')
+                    source = json.loads(raw)
                     target = {key:record[key] for key in ('record_type','title','description','buyer','canton',
                         'publication_date','cpv_codes','bkp_codes') if record.get(key) is not None}
                     market_examples.append({'project_id':record.get('tender_id') or record.get('project_id'),
@@ -97,6 +114,8 @@ class JobStore:
                 with zipfile.ZipFile(dataset_dir/'market_extraction_bundle.zip','w',zipfile.ZIP_DEFLATED) as bundle:
                     for artifact in market_dir.iterdir():
                         bundle.write(artifact, artifact.name)
+            if job['task'] == 'market_extraction' and public_records:
+                records.extend(market_examples)
             manifest = prepare_dataset(records,job['task'],dataset_dir,job['base_model'])
             manifest['upload_sources'] = upload_sources
             manifest['public_record_count'] = len(public_records)

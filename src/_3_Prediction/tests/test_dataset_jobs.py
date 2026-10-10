@@ -69,4 +69,44 @@ class DatasetTests(unittest.TestCase):
             store._save(job)
             self.assertEqual(JobStore(temp).get(job['id'])['status'],'failed')
 
+
+class ExistingSourcesTests(unittest.TestCase):
+    def test_cached_market_data_is_first_class_ready_dataset(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); corpus=root/'corpus'; corpus.mkdir()
+            rows=[]
+            for i in range(5):
+                raw=json.dumps({'title':f'Ventilation {i}'}).encode()
+                path=corpus/f'{i}.json'; path.write_bytes(raw)
+                rows.append({'publication_id':str(i),'tender_id':f'p{i}','record_type':'market_award',
+                    'title':f'Ventilation {i}', 'provenance':{'raw_path':str(path),'sha256':hashlib.sha256(raw).hexdigest()}})
+            (corpus/'market_awards.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+            store=JobStore(root/'jobs',corpus_dir=corpus)
+            job=store.start('market_extraction','base','',root/'uploads',include_existing=True)
+            for _ in range(100):
+                result=store.get(job['id'])
+                if result['status'] not in ('queued','collecting','preparing'): break
+                time.sleep(.01)
+            self.assertEqual(result['status'],'ready_for_training')
+            self.assertEqual(result['public_record_count'],5)
+            self.assertEqual(sum(result['manifest']['counts'].values()),5)
+            win=store.start('win_ratio','base','',root/'uploads',include_existing=True)
+            for _ in range(100):
+                result=store.get(win['id'])
+                if result['status'] not in ('queued','collecting','preparing'): break
+                time.sleep(.01)
+            self.assertEqual(result['status'],'blocked')
+            self.assertEqual(sum(result['manifest']['counts'].values()),0)
+
+    def test_sponsor_seed_is_one_project_matching_supervision(self):
+        from prepare_sponsor import sponsor_examples
+        examples=sponsor_examples(PRED.parents[1]/'materials')
+        self.assertEqual(len(examples),22)
+        self.assertEqual(len({r['project_id'] for r in examples}),1)
+        self.assertTrue(all('outcome' not in r['target'] for r in examples))
+        with tempfile.TemporaryDirectory() as temp:
+            manifest=prepare_dataset(examples,'input_processing',temp,'base')
+            self.assertEqual(manifest['status'],'blocked')
+
 if __name__ == '__main__': unittest.main()

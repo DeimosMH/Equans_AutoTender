@@ -25,3 +25,7 @@ Examples illustrate schemas only; do not upload them as actual training evidence
 Public simap collection generates a separate `market_extraction` bundle: raw structured API document input with deterministic normalized public metadata targets, retaining source provenance. This is structured metadata extraction, not LV extraction or win prediction. Awards remain separate auditable market observations. Its manifest identifies structured API normalization as the supervision source; downstream training and quality evaluation remain necessary.
 
 Preparation writes `train.jsonl`, `validation.jsonl`, `test.jsonl`, `manifest.json`, `rejected.json`, `training_request.json`; splits use deterministic project grouping and SHA-256 file hashes. Chat JSONL formats are a provider-neutral handoff and may need adaptation once the actual endpoint is known. The future user-provided endpoint is expected to support LoRA job creation, but capability, upload, job polling and adapter-serving contracts remain pending. No external training submission occurs today.
+
+`market_extraction` is a separate UI task. Preparation uses archived API records
+with verified raw snapshot hashes, plus any provided simap sources. Sponsor CSV
+matching examples are included only in `input_processing`, with one project ID.

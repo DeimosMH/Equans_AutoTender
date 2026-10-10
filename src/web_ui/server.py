@@ -36,7 +36,7 @@ PREDICTION_DIR = BASE.parent / "_3_Prediction"
 sys.path.insert(0, str(PREDICTION_DIR))
 from dataset import read_upload
 from jobs import JobStore
-PREPARATION_JOBS = JobStore(BASE / "training_jobs")
+PREPARATION_JOBS = JobStore(BASE / "training_jobs", PREDICTION_DIR / "data", BASE.parent.parent / "materials")
 
 # reuse the calculator's loaders/rounding so paths and maths stay in one place
 _spec = importlib.util.spec_from_file_location("calc_common", CALC_DIR / "common.py")
@@ -102,7 +102,7 @@ def list_tenders() -> list:
 
 
 # app settings - LoRA model selection per task (backend connects later)
-TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio")
+TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio", "market_extraction")
 BASE_MODELS = ["GLM-4.6", "GLM-4.5-Air", "Llama-3.3-70B", "Qwen3-32B"]
 AI_DEMO_FACTORS = {  # demo suggestions until the productivity LoRA connects
     "site_efficiency": 0.92, "school_logistics": 1.05,
@@ -1038,7 +1038,8 @@ class Handler(BaseHTTPRequestHandler):
                 t = settings["tasks"][task]
                 t["links"] = str(body.get("links", ""))[:2000]
                 settings = save_ui_settings(settings)
-                job = PREPARATION_JOBS.start(task, settings["base_model"], t["links"], UPLOADS / "lora_data")
+                job = PREPARATION_JOBS.start(task, settings["base_model"], t["links"], UPLOADS / "lora_data",
+                    include_existing=body.get("include_existing", True))
                 self._json(202, {"ok": True, "job": job, "settings": settings})
             elif parts[:2] == ["api", "settings"] and len(parts) == 3 and parts[2] == "upload-data":
                 q = parse_qs(url.query)

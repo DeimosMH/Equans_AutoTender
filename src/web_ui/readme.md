@@ -81,7 +81,7 @@ removes the directory.
 (persisted via `GET/POST /api/settings` in `ui_settings.json`, gitignored):
 
 - **LoRA per task** - one row each for *Input processing*, *Productivity
-  factors*, *Win-ratio prediction*; the selector lists that task's LoRA
+  factors*, *Win-ratio prediction* and *Public notice extraction*; the selector lists that task's LoRA
   versions (dates) or `none`. Only versions trained for the current base
   model are listed - the rest stay stored but need retraining.
 - **Update LoRAs** - the same three rows, each with **Upload data**
@@ -115,3 +115,6 @@ removes the directory.
 - Preparation jobs: `GET /api/settings/jobs`, `GET /api/settings/jobs/<id>` and
   `GET /api/settings/jobs/<id>/artifacts/<filename>`.
 - Prediction: `GET /api/tenders/<id>/wincurve?baseline=<CHF>`.
+
+Preparation can reuse the archived public corpus and sponsor matching examples
+through the checked **Use collected data and sponsor examples** option.
