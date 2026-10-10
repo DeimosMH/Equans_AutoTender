@@ -1,0 +1,918 @@
+# Context Report 5/6 - _4_RecursiveImprovement: Architecture & Pipeline Design
+
+- Date: 2026-10-10
+- Module: `src/_4_RecursiveImprovement`
+- Agent: 5 of 6
+- Angle: architecture & pipeline design (how the module is built and wired into the existing pipeline)
+
+## 1. What the module must do (from repo sources)
+
+From `src/_4_RecursiveImprovement/todo`:
+
+1. Tender didn't pass -> attempt of determining why (UI: folder with all internal
+   data for the tender + link to the tender information with competition applications).
+2. Success of information gathering -> update the estimation-of-success model
+   (allow fallback/switch).
+3. Failure of information gathering -> generate a report.
+
+From `notes.md`: keep records of feedback each time the system is used; accumulate
+observations such as "whenever you participate against company X you are ~10% more
+expensive"; when the client PDF arrives, items that don't match are checked and
+(assumed) updated automatically -> catalog feedback.
+
+Related context already in the repo:
+
+- `src/_3_Prediction/todo`: web-scrape old tender outcomes (won/lost and why) ->
+  LoRA model for success estimation feeding the `profit` slider; min/mid/max
+  `possible` scenarios if such a LoRA exists.
+- `src/web_ui/server.py` already has the whole model-management flow:
+  `TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio")`,
+  versioned LoRA lists per task with `{"version": "<date>", "base": "<model>"}`,
+  `POST /api/settings/update` registers a new dated version and selects it
+  (retraining assumed automatic), `POST /api/settings/upload-data` stores training
+  files as `src/web_ui/uploads/lora_data/{task}_{ts}_{name}` (UPLOADS is
+  module-local to web_ui - corrected in Round 2).
+- `src/web_ui/tenders/<id>/` is already "the folder with all internal data for
+  the tender" (`meta.json`, `positions.csv`, `calc.json`, plus an optional
+  `tender.pdf` - present in 1 of the 3 live tender folders) - the todo's "UI
+  folder" exists; _4 only needs to add outcome/analysis artifacts next to them.
+- `calc.json` (schema_version 2.0) holds everything needed for the "why" analysis:
+  `position_results[]` with `price_source`, `match_confidence`, `review_required`,
+  `status`, `material/labour/direct costs`; `project_cost` with services, allowances,
+  `cost_baseline_chf`, `indicative_selling_price_chf`; `input` provenance.
+
+## 2. Proposed architecture (4-stage pipeline)
+
+```
+ outcome event                 _4_RecursiveImprovement                 consumers
+---------------   ----------------------------------------------   ----------------
+ award published   step1_outcome.py   record won/lost + prices  ->  meta.status
+       |           step2_why.py       factor analysis vs calc    ->  _3_Prediction
+       v           step3_observe.py   competitor + catalog obs   ->  catalog/params
+                   step4_feedback.py  training data + model      ->  win_ratio LoRA
+                                      update/fallback decision       (via settings)
+                   step5_report.py    failure report (md/pdf)    ->  tenders/<id>/reports/
+```
+
+Design principles taken from the existing code:
+
+- One script per todo item, run in order, each reading/writing a JSON artifact and
+  idempotent on re-run (mirrors `_2_Calculator` step1-4 pattern).
+- Paths resolve relative to the script's own location via a module-local
+  `common.py` (`BASE`), plus env-var redirection (`AUTOTENDER_OUTCOME_DIR`) so the
+  web UI can point every analysis at a specific `tenders/<id>/` - exactly the
+  `AUTOTENDER_CALC_OUT` convention from `_2_Calculator/common.py`.
+- Stdlib only (+ pyyaml for `settings.yaml`), JSON `indent=2` + trailing newline,
+  `Decimal` via a copy of `D()/r2()` helpers for any money math.
+- Scripts are importable (functions + `__main__` guard) so `server.py` can call
+  them in-process or via `subprocess` like `run_steps()` does today.
+
+## 3. Stage 1 - Outcome ingestion (won/lost + price)
+
+**Entry points**
+
+- UI: new "Record outcome" panel on a tender page ->
+  `POST /api/tenders/<id>/outcome` (body = outcome record below). Status moves
+  `calculated -> submitted -> won|lost` in `meta.json`.
+- Link harvesting: the settings flow already has a *provide links for tenders*
+  field (`tasks[task].links`); _4 reuses the same links to fetch the public award
+  notice ("tender information with competition applications" in the todo; in
+  Switzerland typically simap.ch award publications listing the winner and
+  sometimes all bid ranks/prices). Fetching is a stub `fetch_award(url)` today
+  (manual entry first, scraper later) - same "backend connects later" stance the
+  settings code already takes.
+
+**Outcome record** - written to `tenders/<id>/outcome.json`:
+
+```json
+{
+  "schema_version": "1.0",
+  "tender_id": "t20261010_143121_4c08",
+  "project": {"id": "OBERGLATT_LUEFTUNG_DEMO", "name": "Primary School Oberglatt - Ventilation"},
+  "outcome": "lost",
+  "decided_on": "2026-11-05",
+  "our_bid_chf": 589659.84,
+  "submitted_at": "2026-10-12",
+  "submitted_scenario": "target",
+  "margin_pct_submitted": 6.0,
+  "winner": {"name": "Competitor AG", "price_chf": 541200.00, "is_us": false},
+  "competitors": [
+    {"name": "Competitor AG", "rank": 1, "price_chf": 541200.00},
+    {"name": "Other GmbH", "rank": 2, "price_chf": 562000.00}
+  ],
+  "price_position_pct": 8.9,
+  "source": {"type": "public_award", "url": "https://...", "fetched_at": "2026-11-06T09:12:00"},
+  "info_gathering": "ok",
+  "notes": "winner cited existing framework contract"
+}
+```
+
+`info_gathering` is the todo's success/failure switch: `ok` (prices + at least the
+winner known), `partial` (outcome known, no prices), `failed` (nothing beyond
+won/lost; step5 generates the report). `price_position_pct` =
+`(our_bid - winner_price) / winner_price * 100` with `Decimal`, stored half-up
+2dp like every other number in the repo.
+
+## 4. Stage 2 - The "why" analysis (step2_why.py)
+
+Pure function over `calc.json` + `outcome.json` -> `analysis.json`. No ML: typed
+factors with explicit values, so the first post-mortems work with zero training
+data. Factors and where they come from:
+
+| Factor | Computation | Source field |
+|---|---|---|
+| `price_position` | our_bid vs winner price, absolute + pct | outcome |
+| `missing_quotes` | count and cost share of `status == "supplier_quote_required"` positions; supplier-package material runs at budget rates, so the share of `direct_position_cost_chf` flagged `price_source == "supplier_package"` estimates the pricing risk we carried | `calc.position_results` |
+| `match_quality` | value-weighted mean `match_confidence` (0.72 supplier vs 0.92 catalog today; real scores once `_1` provides them) + count `review_required` | `calc.position_results` |
+| `cost_structure` | material / labour / services / allowances shares of `project_cost` | `calc.project_cost` |
+| `scenario_gap` | which margin scenario was submitted vs the aggressive one; price delta to winner at the aggressive margin (bridges to `_3_Prediction`'s Aggressive/Target/Conservative slider) | outcome + `project_parameters.json` |
+| `labour_pressure` | hours vs budget if productivity factors were manual (were we slow?) | `calc` + settings `productivity` |
+
+Verdict rule (first pass, deterministic): rank factors, pick the top actionable
+one, e.g. `price_over_by_8.9pct_with_22pct_unquoted_supplier_share -> likely price,
+amplified by quote risk`. Each analysis records `factors`, `verdict`,
+`confidence` (`low/medium/high` from how complete the outcome data was), and the
+full input hashes (`calc_sha`, `outcome_sha`) for traceability - the repo's
+"every result traceable to its source file" convention.
+
+## 5. Stage 3 - Observations (step3_observe.py) - the recursive memory
+
+Two accumulating stores under `src/_4_RecursiveImprovement/output/` (gitignored;
+sibling of `_2_Calculator/output/`):
+
+- `observations/competitor_<slug>.json` - per competitor: rolling stats of
+  `price_position_pct` against them (n, median, last-5 median), building exactly
+  the notes.md observation "against company X you are 10% more expensive". Served
+  back to `_3_Prediction` as prior features and to the UI as a hint card.
+- `observations/catalog_mismatch.json` - items that didn't match: when the
+  client/award PDF arrives (`tender.pdf` upload flow already stores it), compare
+  awarded items vs our matches; queue `{product_id, field, old, new, status:
+  pending|applied}` updates. notes.md says "assume the items can be updated
+  automatically" - so default `applied` for price-only deltas above a threshold,
+  `pending` for structural changes (different product), reviewable in the UI.
+  Writes go to a working copy; sync back to `materials/` stays manual-by-PR in dev.
+
+Observation record schema:
+
+```json
+{
+  "schema_version": "1.0",
+  "type": "competitor_price_delta",
+  "competitor": "Competitor AG",
+  "tender_ids": ["t20261010_143121_4c08"],
+  "n": 3,
+  "median_delta_pct": 9.8,
+  "last_delta_pct": 8.9,
+  "updated_at": "2026-11-06T09:12:00"
+}
+```
+
+## 6. Stage 4 - Feeding `_3_Prediction` retraining + fallback/switch
+
+**Training data.** step4_feedback.py appends one JSONL line per decided tender to
+`uploads/lora_data/win_ratio_<yyyymmdd_HHMMSS>_auto.jsonl` - the exact naming the
+existing `/api/settings/upload-data` endpoint already uses, so retraining (which
+"retraining itself is assumed automatic") finds it in the same directory:
+
+```json
+{"tender_id": "t20261010_143121_4c08", "label": "lost", "features": {
+  "price_position_pct": 8.9, "n_positions": 22,
+  "supplier_share_direct_cost": 0.22, "weighted_match_confidence": 0.85,
+  "material_share": 0.53, "labour_share": 0.18, "services_share": 0.14,
+  "margin_pct": 6.0, "scenario": "target",
+  "competitor_medians": {"Competitor AG": 9.8},
+  "project_kind": "school_ventilation"}}
+```
+
+**Version registration.** After appending, call the *same* logic as
+`POST /api/settings/update` (refactor it into a shared `register_lora_version(task,
+links, provenance)` in server.py, or POST to it): appends
+`{"version": "<date>", "base": settings.base_model}` to
+`tasks.win_ratio.versions`. Add a `provenance` sub-object per version
+(`{outcome_ids: [...], samples: n, trigger: "auto"|"manual"}`) - NOT backwards
+compatible as-is: `_norm_settings` L132-135 rebuilds version dicts with only
+`version`/`base` and strips extra fields; it needs an allow-list passthrough
+(corrected in Round 2, see R2.5/R2.6).
+[Round 2: this section is superseded by the converged state-machine design in
+"Round 2 - conflicts resolved" below; register_lora_version survives as the
+single write path into it.]
+
+**Fallback/switch semantics (champion-challenger).** The current code *always*
+selects a newly registered version. _4 should gate that:
+
+1. New version registers as **challenger** - not auto-selected.
+2. Backtest challenger vs selected champion on all recorded outcomes (Brier score
+   / calibration of the win estimate `_3_Prediction` produced at submission time -
+   store that estimate in the outcome record as `win_estimate_pct` when the tender
+   is submitted, so the comparison is possible later).
+3. Switch (set `selected`) only if challenger >= champion on the backtest with a
+   minimum sample count (e.g. 10 decided tenders); otherwise keep champion, log
+   `switch: "rejected"` in feedback log.
+4. **Fallback** (already half-existing in the repo): when no version matches the
+   current `base_model`, `_norm_settings` yields `selected: None` - exactly the
+   current `win_ratio` state in `ui_settings.json`. Define that contract:
+   `_3_Prediction` must degrade to a heuristic (historical win rate from the
+   outcome store, or plain min/mid/max slider scenarios with no probability), and
+   the UI's scenario card should show "baseline heuristic (no compatible LoRA)".
+5. Rollback = selecting an older version in the settings UI; versions are never
+   deleted, matching the "stay stored but need retraining" behavior.
+
+## 7. Stage 5 - Failure report generator (step5_report.py)
+
+Triggered when `info_gathering == failed` (or analysis `confidence == low`).
+Output: `tenders/<id>/reports/postmortem_<yyyymmdd>.md` + `.pdf` +
+standalone `.html` - same trio the offer export already produces. Implementation:
+reuse the painter conventions from `server.py` (`pdf_report` hand-rolled painter,
+self-contained HTML, `Page`/color constants ORANGE/INK/CARD) by extracting a
+shared `report_painters.py` (or importing server.py functions if kept stdlib-clean).
+Content: cover band "Post-mortem - <tender name>", KPI cards (outcome, our bid,
+known winner price or "unknown"), the factor table from step2 with
+"insufficient data" chips where the outcome was incomplete, the data-gap list
+(what to fetch from the award link / what to ask the client), and next actions
+(update catalog item X, request quote earlier, competitor observation).
+
+Report index record (also appended to `output/reports_index.json`):
+
+```json
+{"schema_version": "1.0", "tender_id": "t20261010_143121_4c08",
+ "kind": "postmortem", "reason": "info_gathering_failed",
+ "generated_at": "2026-11-06T09:30:00",
+ "files": ["reports/postmortem_20261106.md", "reports/postmortem_20261106.pdf"],
+ "analysis_ref": {"calc_sha": "...", "outcome_sha": "..."}}
+```
+
+## 8. File / directory layout
+
+```
+src/_4_RecursiveImprovement/
+├── todo                      # exists
+├── readme.md                 # module doc in _2_Calculator style
+├── settings.yaml             # thresholds: switch sample minimum, catalog auto-apply
+│                             #   delta, links to award sources, mode dev|prod
+├── common.py                 # BASE, D/r2, loaders (outcome/calc/analysis), env redirects
+├── step1_outcome.py          # todo 1a: record/ingest outcome -> outcome.json
+├── step2_why.py              # todo 1b: factor analysis -> analysis.json
+├── step3_observe.py          # notes.md: competitor + catalog observations
+├── step4_feedback.py         # todo 2: training JSONL + register version + switch gate
+├── step5_report.py           # todo 3: failure report md/pdf/html
+├── input/                    # dev fixtures (checked-in example outcome)
+├── data/                     # competitor_aliases.json (name normalization map)
+└── output/                   # observations/, reports_index.json, feedback_log.jsonl
+```
+
+Per-tender artifacts (gitignored, owned by web_ui store):
+`tenders/<id>/outcome.json`, `analysis.json`, `reports/postmortem_*.{md,pdf,html}`.
+New endpoints: `POST /api/tenders/<id>/outcome`, `GET /api/tenders/<id>/analysis`,
+`GET /api/tenders/<id>/postmortem?format=pdf|md|html`, `GET /api/observations`.
+`meta.status` gains `submitted`, `won`, `lost` (existing: `new`, `pdf_stored`,
+`calculated`).
+
+## 9. Implementation step plan
+
+1. **Scaffold** (0.5d): `common.py`, `settings.yaml`, dev fixture outcome in
+   `input/`, readme skeleton.
+2. **step1_outcome.py + endpoint** (1d): outcome record, status transitions,
+   `POST /api/tenders/<id>/outcome`, price_position math with Decimal.
+3. **step2_why.py** (1.5d): factor table over `calc.json`, deterministic verdict,
+   `analysis.json`; unit-test against the checked-in golden tender + a synthetic
+   lost outcome.
+4. **step3_observe.py** (1d): competitor stats, catalog mismatch queue; expose via
+   `GET /api/observations`.
+5. **step4_feedback.py** (1.5d): JSONL append, refactor `register_lora_version()`
+   out of server.py's update handler, champion/challenger gate, fallback contract
+   documented for `_3_Prediction`; `win_estimate_pct` capture at submission.
+6. **step5_report.py** (1.5d): md first, then pdf/html by reusing the painter code
+   (extract `report_painters.py` shared with server.py).
+7. **wire-up** (0.5d): UI panel (record outcome, show post-mortem link), update
+   `src/web_ui/readme.md` endpoint table and `src/readme.md`.
+
+## 10. Risks
+
+- **Sparse labels**: months may pass between tenders; a LoRA trained on <30
+  outcomes will overfit. Mitigation: keep the deterministic step2 factors as the
+  always-on baseline; LoRA is additive, and the switch gate requires a minimum n.
+- **Label noise**: "lost" is not always price (incumbency, framework contracts);
+  the `notes`/verdict fields keep human context; confidence tiers propagate.
+- **Circularity**: prices were set using the model now being trained on their
+  outcomes (feedback bias). Mitigation: store `win_estimate_pct` and scenario at
+  submission; treat evaluation on out-of-time splits only.
+- **Public data availability**: award notices do not always publish competitor
+  prices; `info_gathering: partial/failed` and the report path are first-class,
+  not exceptions.
+- **Catalog auto-update**: wrong auto-applied prices silently corrupt future
+  calcs; auto-apply only price deltas within threshold, everything else pending
+  review (step3), and never rewrite `materials/` directly.
+- **Base-model churn**: switching base model orphans LoRA versions (already
+  handled by `_norm_settings`) - the fallback heuristic must be implemented and
+  visible, not a silent None.
+- **Privacy**: competitor pricing is commercially sensitive; keep tenders/ and
+  observations/ gitignored (already the pattern for `tenders/`, `uploads/`).
+
+## 11. References
+
+- Repo: `src/_4_RecursiveImprovement/todo`, `notes.md`, `src/_3_Prediction/todo`,
+  `src/web_ui/server.py` (settings + `register version` flow, painters),
+  `src/web_ui/readme.md`, `src/_2_Calculator/readme.md` + `common.py` (env-var and
+  step-script conventions), `materials/README.md`.
+- Win/loss post-mortem practice: clozd.com "The Missing Link in Your RFP Process";
+  useminerva.com "How to analyse competitor bids"; tenderflow.co.za tender
+  performance audit guide; APMP body of knowledge (bid debriefs).
+- Champion/challenger + fallback: DataRobot "Introducing MLOps
+  Champion/Challenger Models"; MLflow ML lifecycle management (progressive
+  delivery, feature flags); Google Cloud architecture guidance (shadow
+  deployments).
+- Continuous learning for LoRA: zylos.ai continual learning / catastrophic
+  forgetting in agents (replay-based training with adapters); Fireworks.ai
+  "The Fine-Tuning Bottleneck" (eval-to-retrain loop); rohan-paul.com on LLM drift
+  monitoring and retraining triggers.
+- Verified via local SearxNG (`http://127.0.0.1:8888`, JSON API confirmed working).
+
+## Round 2 - verification & changes
+
+- Date: 2026-10-10 (round 2)
+- Verified against: `src/web_ui/server.py` @ 1117 lines, live `src/web_ui/ui_settings.json`,
+  live tender `src/web_ui/tenders/t20261010_143121_4c08/`, `src/_2_Calculator/common.py`,
+  `src/_2_Calculator/validate.py`, `notes.md`, sibling report `context_agent_6`.
+- Web: local SearxNG (127.0.0.1:8888) engines stayed hard-suspended all round
+  (brave + google-cse "too many requests", duckduckgo timeout/captcha; retried over
+  ~15 min). Fallback: built-in web search + page-level fetch verification (FAR
+  15.404-1 and evanmiller.org fetched full text; other cites are search-result level).
+
+### R2.1 Repo facts - verified line by line
+
+**`POST /api/settings/update` (server.py L994-1009) - sibling's central claim CONFIRMED.**
+
+Exact behavior, in order:
+- L996-999: `task` validated against `TASK_KEYS`, else 400.
+- L1000-1002: settings loaded, `t["links"] = str(body.get("links", ""))[:2000]`.
+- L1003-1005: `version = time.strftime("%Y-%m-%d")`; if that id already exists in
+  `t["versions"]`, it becomes `"%Y-%m-%d %H:%M"`.
+- L1006: `t["versions"].append({"version": version, "base": settings["base_model"]})`.
+- **L1007: `t["selected"] = version` - the new version is selected immediately,
+  with no evaluation, gating, or backtest of any kind.** The round-trip through
+  `save_ui_settings` -> `_norm_settings` (L199-214, L118-181) never undoes it,
+  because the appended version's `base` always equals the current `base_model`,
+  which is exactly the condition L137-138 requires to keep a selection.
+
+Live corroboration in `ui_settings.json`:
+- `win_ratio.selected = null` - its only version ("2026-10-10") has base
+  `GLM-4.5-Air` while `base_model = GLM-4.6`, so `_norm_settings` deselected it.
+  The "fallback / no compatible LoRA" state my round-1 design assumed is the
+  CURRENT live state of `win_ratio`, not a hypothetical.
+- `productivity_factors.versions` contains `"2026-10-10 15:21"` and
+  `"2026-10-10 15:22"` - the date-collision id scheme happening in practice, and
+  also proof that the latest registered version is not always the selected one
+  (selected is 15:21; the UI can send an explicit `selected`).
+
+**Fact neither round-1 report used:** the plain `POST /api/settings` (L1024-1026)
+accepts the whole settings body, so the UI can already set `selected` to ANY
+stored version of the current base - a manual model switch lever exists today,
+and `save_ui_settings` L204-206 preserves stored versions when the client sends
+none. Rollback therefore needs no new storage format, only an explicit action.
+
+**`POST /api/settings/upload-data` (L1010-1022) - confirmed, one path correction.**
+Files land at `src/web_ui/uploads/lora_data/{task}_{%Y%m%d_%H%M%S}_{name}` -
+`UPLOADS` is module-local to web_ui, not repo root (both round-1 reports wrote
+"uploads/lora_data"; corrected in my body above). Filename is sanitized to
+`[A-Za-z0-9._-]` (L1016-1017). The directory exists and is empty - no training
+data has ever been uploaded yet.
+
+**Painters - confirmed.** `pdf_report` L530 (hand-rolled PDF painter: `Page`
+class L370, `ORANGE`/`INK`/`CARD` constants L294-297, base-14 Helvetica),
+`html_report` L674 (standalone HTML), `docx_report` L778 (raw OOXML zip). The
+export endpoint `GET /api/tenders/<id>/pdf?format=pdf|html|docx` dispatches
+between them at L947-980 with `_offer_disposition` L881. Extraction into a
+shared `report_painters.py` remains viable - all three are module-level
+functions over `(calc, params, waste, overhead, margin, descriptions, hide,
+hide_notes)`.
+
+**Tender store - confirmed, one path correction.** `TENDERS` is
+`src/web_ui/tenders/` (module-local, corrected above). `create_tender` (L73-82)
+mints `t{yyyymmdd_HHMMSS}_{4hex}` and `status: "new"`. Observed layouts:
+`t20261010_143121_4c08/` = meta.json + positions.csv + calc.json (no pdf);
+`t20261010_135110_3ddb/` = those three + tender.pdf; `t20261010_160319_4c42/` =
+meta.json only. Status machine verified: `new` (L79) -> `pdf_stored` on pdf
+upload (L1092) / `calculated` on csv upload which triggers the full pipeline
+(L1085) or after manual value edits (L281). `DELETE /api/tenders/<id>` exists
+(L1051-1059). No submitted/won/lost states exist - my round-1 extension list
+("existing: new, pdf_stored, calculated") is exactly right.
+
+**calc.json - every field my "why" factor table depends on exists.**
+Live values in `t20261010_143121_4c08/calc.json` (schema_version 2.0):
+- `position_results[]` keys exactly: `lv_id, source_page, matched_product_id,
+  install_code, quantity, unit, net_unit_cost_chf, material_cost_chf,
+  adjusted_install_hours, labour_cost_chf, direct_position_cost_chf,
+  price_source, match_confidence, review_required, status, labour_role,
+  hourly_rate_chf`.
+- 22 positions: `price_source` = catalog x16 / supplier_package x6; `status` =
+  calculated x16 / supplier_quote_required x6; `match_confidence` = 0.92
+  (catalog) / 0.72 (supplier_package) - my round-1 "0.72 supplier vs 0.92
+  catalog" was exact; `review_required` true for the 6 supplier positions.
+- `project_cost` keys: `scope_note, positions_direct_cost_chf, services_chf,
+  allowances_chf, project_direct_cost_chf, overhead_chf, cost_baseline_chf,
+  indicative_selling_price_chf`; `input` = `{mode: "dev", positions_file: <abs
+  path>}`. One nuance: services/allowances exist only at project level, never
+  per position - the `cost_structure` factor must read `project_cost`, not
+  position rows.
+
+**_2_Calculator conventions - confirmed.** `D()`/`r2()` with ROUND_HALF_UP
+(common.py L9, L33-39); `AUTOTENDER_CALC_OUT` (L23-24) and `AUTOTENDER_FACTORS`
+env overrides; `run_steps` (server.py L217-227) runs each step via subprocess
+with `cwd=CALC_DIR`; `validate.py` diffs output/calc.json against
+`materials/expected_output_example.json` with `TOL = 0.011`. `notes.md` wording
+verified ("when ever your participate in this tender this other company you are
+10% expensive").
+
+### R2.2 Deepened: champion/challenger + shadow gating for a small team
+
+Sources: DataRobot challenger replay; H2O MLOps champion/challenger deployment
+docs (promote best performer via UI); ModelOp champion-challenger definition
+(tracks accuracy, latency, fairness, business impact; statistical tests for
+"sustained improvement"); Pega docs (challengers run alongside the champion
+before promotion); Snowflake automated-retraining champion-challenger pipeline
+(2026); guessthetest.com and Evan Miller's calculator for sample-size reality.
+
+The hard numbers first:
+- Two-proportion test at alpha=0.05, power=80%: n = ((z_{1-a/2}+z_{1-b})^2 *
+  [p1(1-p1)+p2(1-p2)]) / (p1-p2)^2 (Evan Miller, page-verified). For a win-rate
+  moving 10.2% -> 13.2% that is ~1,800-2,550 decided tenders PER VARIANT. Web
+  A/B practice calls ~30k visitors / 3k conversions per variant "highly
+  reliable" (guessthetest). A tender team deciding dozens of bids per year can
+  NEVER reach classical significance on win-rate comparisons.
+- The n>=30 rule of thumb only covers moderate-to-large effects on means (CLT);
+  it is a floor for sanity, not a promotion criterion.
+
+Consequence for this repo - the gate cannot be a significance test, it must be:
+1. **Deterministic golden-set eval** (the `validate.py` pattern, zero outcome
+   data needed): new version must not regress the curated examples. Pass/fail.
+2. **Replay backtest with uncertainty, not p-values** (DataRobot's "replay
+   stored champion predictions for challengers" is exactly this): score champion
+   and challenger on all recorded outcomes; report Brier score and a calibration
+   table, each WITH a Beta/Jeffreys interval on the win-rate; never a naked
+   point estimate.
+3. **Human promotion by default.** Commercial MLOps UIs (H2O, DataRobot, Pega)
+   all end the challenger flow with a human clicking promote. That is the right
+   default at this volume.
+4. **Auto-promote only under both:** n_decided >= 30 AND P(challenger better
+   than champion) > 0.9 estimated by Beta-Binomial Monte Carlo
+   (`random.betavariate` draws, ~std lib only; converges with the sibling's
+   Beta-Binomial recommendation).
+   - My round-1 "switch if challenger >= champion at n>=10" is RETIRED: 10
+     decided tenders is enough to *surface a recommendation* in the UI, not to
+     switch anything automatically.
+5. **Fallback stays as verified:** `selected: null` after base-model churn is
+   real behavior (live in `ui_settings.json` today); `_3_Prediction` must
+   visibly degrade to the historical-rate heuristic.
+
+### R2.3 Deepened: attributing a loss when only the winner price is public
+
+Page-verified anchor: FAR 15.404-1 (acquisition.gov, full text fetched) formally
+splits exactly our problem:
+- **Price analysis** = "examining and evaluating a proposed price *without*
+  evaluating its separate cost elements and proposed profit". Techniques:
+  comparison with competitive proposals, comparison with historical prices for
+  the same/similar items (adjusted for time, terms, quantity), parametric
+  rough-yardsticks (their example: dollars per pound/horsepower - ours: CHF per
+  position, per m2 ventilated), independent estimates.
+- **Cost analysis** = "review and evaluation of any separate cost elements and
+  profit" - only possible on a bid whose breakdown you hold.
+
+Mapping to _4_RecursiveImprovement: on the winner we can only ever do PRICE
+analysis (bid ratio vs our own history per client-type/competitor, parametric
+benchmarks); on OURSELVES we hold a full COST analysis already - `calc.json`.
+So step2_why decomposes the gap G = our_bid - winner_price in two stages,
+everything computable from existing fields:
+
+1. **Margin stage (controllable lever):** our_bid - cost_baseline_chf =
+   overhead + margin (both in `project_cost`). Recompute the scenario slider at
+   0 margin -> the "price floor". If floor <= winner_price, the loss is
+   attributable to pricing policy (margin/overhead), i.e. the `_3_Prediction`
+   slider decision, not to costing.
+2. **Cost stage (structural):** cost_baseline_chf - winner_price = the part we
+   could not bridge even at zero margin. Attribute inside our cost structure:
+   the 6 supplier_package positions running at budget rates (quote risk), the
+   productivity factors in effect (`models_used.factors_snapshot`), material vs
+   labour shares. Mark every such split `estimated` (sibling's observed/estimated
+   flag - adopted) because the winner's true breakdown is unknown.
+3. **Bid-ratio history (Friedman/Gates input):** store `bid_ratio =
+   our_bid / winning_bid` per outcome. Verified references: Friedman's 1956
+   model corrections (ASCE 2019, "Friedman's Bidding Model: Errors and
+   Corrections"), Carr 1982 general model (Gates always more optimistic than
+   Friedman), AAST overview recommending the average of the two optimal markups
+   as the moderate strategy. Pool at client-type level until per-competitor n
+   justifies separate fits (matches sibling).
+4. Swiss award data (round-1 simap.ch claim) could NOT be re-verified this
+   round - SearxNG engines down; treat as unconfirmed, manual check pending.
+
+### R2.4 Deepened: HITL review UX for suggested model switches
+
+Verified pattern set (stack-ai approval-workflow design; aiuxplayground HITL
+UX guide 2026; elementum in-the-loop vs on-the-loop; institutepm escalation-
+trigger framework; Cradl AI low-confidence routing; Domo approve/deny gate):
+- The model RECOMMENDS, a human approves the consequential action; the
+  recommendation ships with the evidence attached (ours: replay backtest table).
+- Side-by-side diff before approve/reject: for us, per tender - champion
+  estimate vs challenger estimate vs actual outcome, Brier contribution per row.
+- Route by confidence: only flagged/low-confidence cases demand review (ours:
+  the 6 `review_required` positions and `match_confidence < 0.8` are the
+  existing in-repo analog - reuse the same chip styling).
+- Approve is one click; REJECT requires a reason, and the reason is logged
+  (feeds `feedback_log.jsonl`).
+- Rollback is first-class, one click, never a JSON edit.
+
+Concrete settings-page design (extends the existing version list UI):
+- Each version row gains a status chip: `staged -> evaluating -> shadow ->
+  active`, plus `rejected` / `rolled_back`; legacy rows normalize to `active`.
+- The shadow row shows "Compare (n outcomes)" -> the side-by-side table above.
+- "Promote" button is enabled only after the golden-set eval passed; clicking
+  writes `promoted_at/by`; "Keep champion" opens a one-line reason box.
+- When `selected = null` (today's live win_ratio state), the tender scenario
+  card shows a "baseline heuristic - no compatible LoRA" badge, so the fallback
+  is visible, not silent.
+
+### R2.5 Conflicts with sibling (context_agent_6) - resolved to ONE design
+
+Conflict 1: sibling's 4-state version machine vs my `register_lora_version`
+refactor + backtest gate. **Resolution (both survive, merged):**
+- Refactor L1000-1008 into `register_lora_version(task, links, provenance)` -
+  the SINGLE write path for versions; the POST handler calls it. New versions
+  enter with `status: "staged"`; the handler STOPS setting `selected` (delete
+  reliance on L1007).
+- Version entry schema (one design):
+  `{seq: int (monotonic, fixes the "2026-10-10 15:21" collision problem),
+    version: str, base: str, status: str, links: str, data_files: [sha256],
+    created_at, eval: {...golden scores...}, shadow: {...n, brier, table ref...},
+    promoted_at, promoted_by, history: [...]}`
+- `_norm_settings` normalizes: missing `status` -> `active` (the three existing
+  entries stay valid), missing `seq` -> list index. CRITICAL prerequisite found
+  in round 2: `_norm_settings` L132-135 REBUILDS every version dict as a bare
+  `{"version", "base"}` whitelist, so any extra field (`status`, `seq`,
+  `data_files`, `eval`, ...) is silently STRIPPED on every load/save round-trip.
+  Neither round-1 report caught this (my round-1 "backwards compatible with
+  `_norm_settings`, which ignores unknown keys" was wrong for version entries).
+  The normalizer must gain an allow-list passthrough for the new version fields
+  in the same change - or promotion state lives in a sidecar file (e.g.
+  `output/model_states.json`) that the settings normalizer never touches.
+- `selected` becomes derived: the unique `active` version. Rollback = promote an
+  older version (current active -> `rolled_back` with reason). New endpoint
+  `POST /api/settings/promote {task, seq}` (or version id) - supersedes manual
+  `selected` flipping via the plain settings POST, which keeps working.
+- Gating = R2.2 (golden eval -> shadow replay -> human promote; auto-promote
+  only at n>=30 AND posterior > 0.9). Sibling's separate `evaluate` callback
+  endpoint: adopted as `POST /api/settings/evaluated {task, seq, scores}` for
+  the external trainer to call back.
+
+Conflict 2: record format - sibling's JSONL-in-tender-folder vs my outcome.json.
+**Resolution:** per-tender `outcome.json` is the canonical record (a tender
+folder holds ONE tender - a JSONL per folder buys nothing); the global
+append-only `output/outcomes_index.jsonl` is DERIVED from the outcome.json
+files (rebuildable), and step4 derives the training JSONL from the same source.
+Adopted from sibling into outcome.json: `bid_ratio`, `models_used` (version
+snapshot per task at bid time - merges with my `win_estimate_pct` capture:
+store `predicted_win_prob` AND the version ids), `loss_reason` enum +
+`loss_detail`, `confidence: observed|estimated` on every inferred number.
+Kept from mine: `info_gathering: ok|partial|failed` as the todo's switch,
+Decimal/r2 money, `price_position_pct`.
+
+Conflict 3: competitor stats - my rolling median vs sibling's Beta-Binomial.
+**Resolution:** both, layered - rolling median/last-5 as descriptive display;
+Beta posterior with pseudo-counts alpha0+beta0 ~= 10 as the served prior to
+`_3_Prediction` (sibling's shrinkage form: shrunk = (a0+w)/(a0+b0+n)).
+
+Conflict 4: report templating - my stdlib painters vs sibling's jinja2.
+**Resolution:** stdlib first (round-1 `report_painters.py` extraction stands);
+markdown + standalone HTML are the primary artifacts, real PDF only on demand
+(sibling's bottom line). jinja2 is a permitted later addition (pyyaml-class
+single pure-Python dep) IF post-mortem sections multiply past ~4 - not for v1.
+
+### R2.6 Errata applied to the round-1 body above
+
+1. `uploads/lora_data/...` -> `src/web_ui/uploads/lora_data/...` (section 1).
+2. `tenders/<id>/` -> `src/web_ui/tenders/<id>/`, tender.pdf marked optional
+   (section 1; sections 3/7/8 paths inherit the same correction).
+3. Section 6 annotated as superseded by R2.5's converged state machine; the
+   n>=10 auto-switch threshold retired in favor of R2.2's numbers.
+4. "The current code always selects a newly registered version" - now stated
+   with the exact line (L1007) and the `_norm_settings` round-trip caveat.
+5. Round-1 section 6 claim "backwards compatible with `_norm_settings`, which
+   ignores unknown keys" - WRONG for version entries: L132-135 rebuilds each
+   version as `{"version", "base"}` only and strips every other field on each
+   normalize. New per-version fields require extending `_norm_settings` (or a
+   sidecar state file) - see R2.5.
+6. Everything else in the round-1 body checked out unchanged (calc.json fields,
+   status names, painter names/locations, env-var conventions, D/r2 helpers).
+
+### R2.7 Open risks added or updated
+
+- **Search-engine outage:** SearxNG engines (brave, google-cse, ddg) were
+  suspended for the entire round despite ~15 min of backoff - round 3 should
+  re-verify the simap.ch/public-award-data claims and expect slow engines.
+- **Bypass path:** once a real trainer connects, it must call
+  `register_lora_version`, never the raw update semantics (or anything that
+  sets `selected`) - sibling's "silent auto-promotion" risk confirmed at L1007.
+- **Decomposition honesty:** winner-side attribution is always `estimated`;
+  the report must print the FAR-style caveat (price analysis vs cost analysis)
+  so readers do not mistake inferred splits for observed ones.
+- **Non-stationarity:** the posterior-based auto-switch assumes the bid-ratio
+  distribution is stable; enforce out-of-time evaluation (round-1 circularity
+  risk stands) and re-fit per client-type, not globally.
+- **`seq` migration:** existing collision ids ("2026-10-10 15:21") must map to
+  stable seq ints before any rollback reference is stored (sibling risk,
+  confirmed live).
+
+### R2.8 Round-2 references
+
+- Page-verified: acquisition.gov FAR 15.404-1 (price vs cost analysis,
+  techniques list); evanmiller.org/ab-testing/sample-size.html (two-proportion
+  n formula, worked example).
+- Search-result level (domain): docs.datarobot.com (challenger replay);
+  docs.h2o.ai (champion/challenger deployments, promote via UI); modelop.com
+  (champion-challenger testing, metrics + statistical gating); docs.pega.com
+  (challengers run alongside champion); snowflake.com (automated retraining
+  champion-challenger, 2026); guessthetest.com (30k/3k per variant guidance);
+  ascelibrary.org (Friedman's Bidding Model: Errors and Corrections, 2019;
+  Carr 1982 general bidding model); aast.edu (Friedman vs Gates markup
+  overview); hyperbots.com (challenger model framework); stack-ai.com,
+  aiuxplayground.com, elementum.ai, institutepm.com, cradl.ai, domo.com (HITL
+  approval UX: recommend-then-approve, diffs, confidence routing, logged
+  rejection reasons).
+- Local SearxNG `http://127.0.0.1:8888` confirmed up (HTTP 200) but all engines
+  suspended; queries retried with 45s-300s backoffs, zero results returned.
+
+## Round 3 - implementation blueprint & integration
+
+- Date: 2026-10-10 (round 3). Inputs: this report + sibling (context_agent_6),
+  `_3_Prediction/context_agent_3`, `_1_AI_InputProcessing/context_agent_1` (all
+  round-2), live `server.py`, `ui_settings.json`, live tender
+  `t20261010_143121_4c08`. SearxNG probed once (paced): engines STILL suspended
+  (brave/google-cse "too many requests", ddg timeout) - 3rd round running; all
+  evidence below is local-execution verified instead (R3.7).
+
+### R3.1 Final file tree
+
+```
+src/_4_RecursiveImprovement/
+├── todo, readme.md          # module doc, _2_Calculator style
+├── settings.yaml            # golden_floor, backtest_margin 0.02, min_decided 30,
+│                            #   auto_promote_posterior 0.9, beta_pseudo_counts 10
+│                            #   (floor 5, cap 30), catalog_auto_apply_delta_pct
+├── common.py                # BASE, D/r2, loaders, sha256, ceil1000, env redirects
+├── step1_outcome.py         # -> tenders/<id>/outcome.json
+├── step2_why.py             # -> tenders/<id>/analysis.json
+├── step3_observe.py         # competitor+catalog observations -> output/
+├── step4_feedback.py        # training JSONL + register version + gates
+├── step5_report.py          # post-mortem md/html(/pdf) -> tenders/<id>/reports/
+├── report_painters.py       # extracted from server.py L294-880 (Page, palette,
+│                            #   html skeleton) - shared, stdlib-only
+├── input/example_outcome_lost.json   # dev fixture (synthetic winner, R3.7)
+├── data/competitor_aliases.json
+└── output/                  # gitignored: observations/competitor_<slug>.json,
+                             #   catalog_mismatch.json, index/tender_outcome.jsonl
+                             #   (derived), segments/<seg>.json (Beta posteriors),
+                             #   reports_index.json, feedback_log.jsonl
+```
+Per-tender artifacts (web_ui store, gitignored): `outcome.json`, `analysis.json`,
+`reports/postmortem_<yyyymmdd>.{md,html[,pdf]}`.
+
+### R3.2 Signatures (all steps importable, `__main__` guard each)
+
+```python
+# common.py: TENDER_DIR = env AUTOTENDER_TENDER_DIR else BASE/"input" (dev mode);
+#   D(x), r2(x), sha256_file(p), ceil1000(x), append_jsonl(path,row),
+#   load_calc/load_outcome/load_analysis(tdir)
+# step1_outcome.py: validate_outcome(body)  (enums/required/types);
+#   compute_derived(rec)  (price_position_pct, bid_ratio, Decimal);
+#   record_outcome(tdir, body)  (writes outcome.json)
+# step2_why.py: supplier_exposure(prs); match_quality(prs); cost_structure(calc);
+#   gap_decomposition(calc,outcome,margins); scenario_gap(calc,outcome,margins);
+#   analyse(tdir)  (writes analysis.json)
+# step3_observe.py: competitor_stats(outcomes,aliases)  (rolling + Beta posterior);
+#   catalog_mismatches(outcome,calc)  (pending/applied queue)
+# step4_feedback.py: training_row(calc,outcome,analysis,obs);
+#   emit_jsonl(rows,task)  (-> src/web_ui/uploads/lora_data/);
+#   register_version(task,data_file,provenance)  (POSTs /api/settings/update);
+#   brier_backtest(version_a,version_b,outcomes)
+# step5_report.py: render_markdown(analysis,outcome,calc); render_html(...)
+```
+
+### R3.3 Final schemas (merged R2.5/R2.6 design)
+
+`outcome.json` (canonical per-tender record):
+```jsonc
+{"schema_version": "1.0", "tender_id": "t20261010_143121_4c08",
+ "recorded_at": "2026-11-06T09:12:00", "outcome": "lost",  // won|lost|withdrawn|no_bid
+ "decided_on": "2026-11-05", "submitted_at": "2026-10-12",
+ "our_bid_chf": 589659.84, "submitted_scenario": "Target", "margin_pct_submitted": 5.5,
+ "winning_bid_chf": 541200.00, "winner": "Competitor AG", "n_competitors": 4,
+ "price_position_pct": 8.95,   // (our-winner)/winner*100, Decimal r2
+ "bid_ratio": 1.0895,          // our/winning (derived, Friedman input)
+ "loss_reason": "price_too_high",  // price|technical|references|capacity|spec_mismatch|incumbent|other
+ "loss_detail": "...", "info_gathering": "ok",   // ok|partial|failed (todo switch)
+ "predicted_win_prob": 0.41,   // captured AT SUBMISSION from _3 (open F2)
+ "models_used": {"input_processing": "2026-10-10", "productivity_factors": "manual",
+                 "win_ratio": null, "factors_snapshot": {<effective_factors()>}},
+ "competitors": [{"name": "...", "rank": 1, "price_chf": 541200.0}],
+ "source": {"type": "public_award|manual", "url": "...", "fetched_at": "..."},
+ "confidence": "observed",     // observed|estimated on every inferred number
+ "notes": "..."}
+```
+`analysis.json`: `{schema_version, tender_id, generated_at, calc_sha, outcome_sha,
+factors: {supplier_exposure, match_quality, cost_structure, gap_decomposition,
+scenario_gap}, verdict: {code, narrative, top_factor}, confidence}` - factor
+sub-objects exactly as R3.4 produces them.
+
+### R3.4 step2_why.py pseudocode over REAL calc.json fields
+
+```python
+prs, pc = calc["position_results"], calc["project_cost"]
+pos_direct = D(pc["positions_direct_cost_chf"])                  # 372700.12
+sup = [p for p in prs if p["price_source"] == "supplier_package"]
+sup_cost = sum(D(p["direct_position_cost_chf"]) for p in sup)    # 271261.31
+# supplier_exposure = {n_supplier_positions,                    # 6
+#   supplier_share_direct_cost: r2(sup_cost/pos_direct),        # 0.7278
+#   n_status_quote_required, review_required_cost_share, supplier_material_chf,
+#   supplier_labour_chf, supplier_hours: sum p["adjusted_install_hours"]}
+wmc = sum(D(p["direct_position_cost_chf"])*D(p["match_confidence"]) for p in prs)/pos_direct
+# match_quality = {weighted_match_confidence: wmc,               # 0.7744
+#   unweighted_mean_confidence, low_conf_cost_share (conf<0.8), n_review_required,
+#   source: "placeholder|_1_real"}       # until _1 ships real scores
+# cost_structure (from project_cost ONLY - services never per position):
+#   material_share = sum(p["material_cost_chf"])/pos_direct      # 0.7449
+#   labour_share; services_share = services_chf.total_chf/project_direct_cost_chf;
+#   allowances_share; overhead_share = overhead_chf/cost_baseline_chf   # 0.0783
+baseline = D(pc["cost_baseline_chf"]); our_bid = D(pc["indicative_selling_price_chf"])
+winner = D(outcome["winning_bid_chf"]); G = our_bid - winner
+# gap_decomposition = {gap_chf: r2(G), gap_pct_of_winner,       # 8.95
+#   margin_stage_chf: r2(our_bid-baseline), margin_stage_pct,   # 5.99
+#   cost_stage_chf: r2(baseline-winner), cost_stage_pct,        # 2.96
+#   price_floor_chf: ceil1000(baseline), floor_above_winner,    # 558000/True
+#   quote_sensitivity: q in (0.05,0.10): baseline-q*sup_cost -> floor gap
+#     flips sign at q ~= cost_stage/sup_cost = 5.9%, basis: "estimated"}
+#   (FAR 15.404-1: winner side is price analysis, never cost analysis)
+# scenario_gap: params["stretch_bid_optimization"]["scenario_margins_pct"] ->
+#   bid = ceil1000(baseline/(1-D(m)/100)) per scenario, gap_to_winner each
+# verdict: floor<=winner -> "pricing_policy"; quote_sensitivity flips ->
+#   "quote_risk"; margin_stage_pct > 2*cost_stage_pct -> "price_amplified_by_cost";
+#   else "structural_cost"; tie to loss_reason enum, record top_factor.
+```
+Printable cross-checks (verified R3.7): `small_material_chf` = 3.5% of total
+material; `supplier_package_contingency_chf` = 3.0% of supplier-package
+material; `transport_equipment_chf` = 2.5% of positions direct (params
+`allowances`).
+
+### R3.5 server.py changes - diff-level list (applicable standalone)
+
+1. **`_norm_settings` L132-135 (strip bug, proven R3.7[F]):** replace the
+   3-line version rebuild with an allow-list passthrough:
+   `VFIELDS = ("version","base","status","seq","created_at","data_files",
+   "provenance","eval","promoted_at","promoted_by","retired_at","history")`;
+   `nv = {k: v[k] for k in VFIELDS if k in v}`; force `version`/`base` as today;
+   default `seq` = list index, `status` = `"active"` when absent. Migration
+   (preserves live selections): if >1 same-base version is `active`, keep the
+   stored-`selected` one (else first) active, demote others to `"retired"`.
+2. **`_norm_settings` L136-138 + `save_ui_settings` L207-211 (silent
+   auto-select):** replace both "first matching-base version" fallbacks with
+   `active = next(v["version"] for v in versions if v.get("status","active")
+   =="active" and v["base"]==base, "")`; `selected` derived: if `selected !=
+   active: selected = active or None`. (R3.7[F]: the current fallback silently
+   selects a freshly appended version TODAY, without L1007.)
+3. **`POST /api/settings/update` L1003-1008:** keep date/collision id; append
+   `{"version", "base", "status": "staged", "seq": len(t["versions"]),
+   "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "history": [{"event":
+   "registered", "at": ...}]}`; **DELETE L1007** `t["selected"]=version`.
+   Extract into `register_lora_version(task, links, provenance)` - single write
+   path (handler + step4 both call; provenance/data_files merged when step4).
+4. **New `POST /api/settings/promote`** (branch next to "update"): body
+   `{task, seq, note}`; 400 if seq missing or status not in
+   `staged|candidate|active`; other same-base `active` -> `retired` (+history);
+   `v["status"]="active"`, `promoted_at/promoted_by`, history append;
+   `t["selected"]=v["version"]`; save. Rollback = promote older seq (reason
+   recorded in history).
+5. **New `POST /api/settings/evaluated`** (sibling callback, adopted): body
+   `{task, seq, scores: {golden?, backtest?}}` -> write `v["eval"]` + history
+   `gate_passed|gate_failed`; `staged -> candidate` on pass, `-> rejected` on
+   fail. Trainer runs remotely; only the RESULT is POSTed (open R2.7-3).
+6. **New `POST /api/tenders/<id>/outcome`** (after "rename" L1035): step1's
+   `validate_outcome`+`compute_derived` in-process (import like calc_common),
+   write `tenders/<id>/outcome.json`; meta.status `calculated -> submitted` on
+   record, `-> won|lost` when decided (`_upload` L1085/1092 untouched); then
+   subprocess step2/3/4 (`cwd=<module dir>`, env `AUTOTENDER_TENDER_DIR=tenders/
+   <id>`, mirroring `run_steps` L217-227).
+7. **New GETs** (next to pdf export L947-980): `/api/tenders/<id>/analysis`,
+   `/api/tenders/<id>/postmortem?format=md|html|pdf`, `/api/observations`.
+   `report_painters.py` extraction: move `Page`, ORANGE/INK/CARD, html skeleton
+   (L294-880); server.py imports it (existing exports keep behavior).
+8. **UI (static/index.html):** version rows render `seq + version + status
+   chip` (staged/candidate/active/retired/rejected); Promote button POSTs
+   /promote; the L843-853 select flow maps to /promote, not the generic save.
+
+### R3.6 Training-JSONL emission (step4_feedback.py)
+
+Append one line per decided tender to `src/web_ui/uploads/lora_data/
+win_ratio_<yyyymmdd_HHMMSS>_auto.jsonl` (existing upload naming; sanitization
+per L1016-1017). Row (features from R3.4; competitor_medians from step3;
+project_kind slug from `calc.project.id`):
+```json
+{"tender_id": "t20261010_143121_4c08", "label": "lost", "loss_reason": "price_too_high",
+ "features": {"price_position_pct": 8.95, "bid_ratio": 1.0895, "n_positions": 22,
+  "supplier_share_direct_cost": 0.7278, "weighted_match_confidence": 0.7744,
+  "review_cost_share": 0.7278, "material_share": 0.7449, "labour_share": 0.2551,
+  "services_share": 0.2253, "margin_pct": 5.5, "scenario": "Target",
+  "competitor_medians": {"Competitor AG": 9.8}, "project_kind": "school_ventilation"},
+ "models_used": {"win_ratio": null, "input_processing": "2026-10-10"},
+ "recorded_at": "2026-11-06T09:12:00"}
+```
+Emission cumulative (each run re-emits ALL decided tenders - replay corpus per
+sibling R2.2; dedupe on `tender_id`), then `register_lora_version(task=
+"win_ratio", links, provenance={outcome_ids, samples, trigger: "auto",
+data_files: [{name, sha256}]})` -> `staged`; gates per R2.2/R2.5 (golden eval;
+Brier non-inferiority <= +0.02 at n>=10; auto-promote only n>=30 AND posterior
+P(better)>0.9; else human /promote).
+
+### R3.7 EXECUTION evidence (stdlib script, run 2026-10-10 vs live tender)
+
+Real `calc.json` of `t20261010_143121_4c08` (22 positions; synthetic winner
+541200.00 - no outcome exists yet, labeled synthetic):
+- **[A] supplier exposure:** 6 supplier positions carry **271261.31 of
+  372700.12 = 72.78%** of direct position cost (round-1's "22%" example was a
+  placeholder - the real tender is far more quote-exposed); same 6 rows are
+  `review_required` + `supplier_quote_required`. Allowances cross-checks exact:
+  small_material 9716.92 = 3.5% of material 277626.29; contingency 6140.16 =
+  3.0% of supplier material 204672.00; transport 9317.50 = 2.5% of direct.
+- **[B] match quality:** weighted match_confidence **0.7744** vs unweighted
+  **0.8655** - value-weighting is not cosmetic: the 0.72-confidence supplier
+  rows are the expensive ones (72.78% of cost under confidence < 0.8).
+- **[C] cost structure:** material 74.49% / labour 25.51% of positions;
+  services 22.53% / allowances 4.90% of project direct; overhead 7.83% of
+  baseline 557228.55.
+- **[D] gap decomposition (synthetic winner):** G = 48459.84 = 8.95% of winner
+  = margin stage 32431.29 (5.99%) + cost stage 16028.55 (2.96%). Floor
+  (margin 0, ceil-1000) = 558000 > winner -> verdict "quote_risk/
+  structural_cost", NOT pure pricing: even at zero margin we sit 3.10% above
+  the winner. Scenario ladder: Aggressive 2.5% -> 572000 (gap 5.69%), Target
+  4.0% -> 581000 (7.35%), Conservative 6.5% -> 596000 (10.13%). Quote
+  sensitivity: quotes 5% under budget -> floor gap +0.52%; 10% under ->
+  floor 531000 = **-1.88% BELOW winner** (verdict flips to "pricing_policy");
+  break-even quote delta = cost_stage/sup_cost ~= 5.9%.
+- **[E] training row** emitted with exactly the R3.6 features (values above).
+- **[F] `_norm_settings` strip + auto-select, proven on LIVE code:** appended
+  `{"version":"2026-11-01","base":"GLM-4.6","status":"staged","seq":2,
+  "created_at":...,"provenance":{...}}` to the live win_ratio task, ran the
+  live `_norm_settings` (imported from server.py): entry returns as
+  `{'version': '2026-11-01', 'base': 'GLM-4.6'}` - status/seq/created_at/
+  provenance ALL stripped; AND `selected` silently flipped `null` ->
+  `'2026-11-01'` via the L137-138 first-matching-base fallback ALONE (no
+  L1007). Both R3.5 patches are proven prerequisites, not guesses.
+
+### R3.8 Cross-module composition (agents 1 and 3, round-2)
+
+- **_1_AI_InputProcessing -> step2/step5:** `match_confidence` is today the
+  `_2_Calculator` placeholder (0.92 catalog / 0.72 supplier, common.py L30);
+  once `_1` step5_match.py ships real scores + `pipeline_report.json` (rows
+  confirmed/rejected, match distribution), `match_quality.source` flips to
+  `"_1_real"` and the report's data-gap section prints extraction quality.
+  Agent-1 nuance adopted: a supplier-quote row KEEPS its suggested_product_id
+  (a match at lower confidence) - `supplier_share` measures quote-risk, NOT
+  match failure; attribution separates them via `weighted_match_confidence`
+  vs `supplier_share_direct_cost`. `review_required` rows reuse the same HITL
+  chip routing (R2.4).
+- **_4 -> _3_Prediction:** step4's JSONL lands in `uploads/lora_data/` (the
+  corpus `_3` train/step3_lora.py consumes); the same outcomes map 1:1 onto
+  `_3`'s `data/bids.jsonl` (`economics.relative_price_position` = our
+  `bid_ratio`; `why.loss_reason_codes` = our `loss_reason`; `outcome` = label)
+  - one writer, two readers. `predicted_win_prob` must be captured at
+  submission (agent-3 open F2) - required by the Brier backtest gate. Fallback
+  contract: live `win_ratio.selected = null` today -> `_3` serves heuristic
+  mode with a visible "baseline heuristic" badge (R3.7[F]: the null state is
+  real AND unstable under today's normalizer).
+- **web_ui:** all endpoint/state changes are R3.5; nothing else grows - steps
+  stay subprocess-invoked (house pattern), painters extracted once, shared.
+
+### R3.9 Failure-report outline (step5_report.py painter sections)
+
+Trigger: `info_gathering == "failed"` or analysis `confidence == "low"`.
+Sections (md first, standalone HTML via painters, PDF on demand): 1) cover
+band "Post-mortem - <tender name> - <decided_on>"; 2) KPI cards: outcome,
+our_bid, winning price or "unknown", gap % or chip "no public prices"; 3)
+factor table (R3.4 factors; "insufficient data" chips where outcome
+incomplete); 4) data-gap list - what the award link should provide (winner,
+all-bid ranks, prices) + what to ask the client; 5) estimated-vs-observed
+caveat box (FAR 15.404-1 wording); 6) scenario ladder vs winner; 7) next
+actions (request quotes earlier for the N supplier positions, pending catalog
+updates from the step3 queue, competitor observation created); 8) provenance
+footer (calc_sha, outcome_sha, models_used, generated_at). Index record
+appended to `output/reports_index.json` (R1 schema + loss_reason, models_used).
+
+### R3.10 Remaining gaps
+
+1. Golden sets per task do not exist (biggest manual item; validate.py pattern).
+2. `predicted_win_prob` capture point (submission flow of _3/_4) - TBD.
+3. `/api/settings/evaluated` callback auth/shape - TBD (trainer is external).
+4. simap.ch award-notice structure STILL unverified (SearxNG suspended 3
+   rounds); `fetch_award(url)` stays a stub; manual entry first.
+5. Catalog mismatch queue needs an awarded-items comparison source - undefined
+   until a real award/client PDF exists.
+6. Competitor-price privacy in reports/artifacts - access control before this
+   leaves localhost.
+7. `seq` migration for live collision ids ("2026-10-10 15:21"/"15:22") -
+   R3.5-1 covers it; UI dropdown must render seq+version immediately.

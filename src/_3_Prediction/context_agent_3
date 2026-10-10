@@ -1,0 +1,561 @@
+# Context Report — Architecture & Pipeline Design for `_3_Prediction`
+
+- **Date:** 2026-10-10
+- **Module:** `src/_3_Prediction`
+- **Agent:** context agent 3 of 6
+- **Angle:** architecture & pipeline design (bid optimization / win-probability engine)
+- **Research tooling:** local SearxNG verified working (`curl http://127.0.0.1:8888/search?q=...&format=json` returned results).
+
+---
+
+## 1. What already exists (constraints we must fit into)
+
+| Artifact | Relevant fact |
+|---|---|
+| `src/_3_Prediction/todo` | Web-scrape old tenders (won + why, lost + why) -> LoRA model for success; slider with selectable `profit` and possible **min / mid / max** once the LoRA exists. |
+| `materials/README.md` (stretch goal) | Aggressive / Target / Conservative scenarios; each shows bid price, margin, estimated win probability, expected contribution; inputs listed under `model_inputs`. |
+| `materials/project_parameters.json` | `stretch_bid_optimization`: `reference_win_probability: 0.55`, `price_sensitivity_probability_points_per_1pct_price: 0.05`, appetite `+0.05`, competition `-0.05`, clamp `[0.05, 0.95]`, scenario margins `2.5 / 4.0 / 6.5`. |
+| `materials/expected_output_example.json` | `recommended_bid_range.scenarios[]` with `bid_price_chf, margin_pct, estimated_win_probability, expected_contribution_chf` — the golden schema `_3` must produce. |
+| `src/_2_Calculator` | Conventions to copy: `common.py` shared loaders, step scripts that grow `output/calc.json` field by field, `settings.yaml` dev/prod input modes, env overrides `AUTOTENDER_CALC_OUT` (redirect output) and `AUTOTENDER_FACTORS` (JSON override), `validate.py` golden regression, stdlib-first, per-module `readme.md`. `calc.json` today ends at `project_cost.cost_baseline_chf` / `indicative_selling_price_chf`. |
+| `src/web_ui/server.py` | Settings already model the future: `TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio")`; LoRA versions `[{version, base}]` filtered by active `base_model` (BASE_MODELS: GLM-4.6, GLM-4.5-Air, Llama-3.3-70B, Qwen3-32B); `POST /api/settings/update` registers a dated version; `POST /api/settings/upload-data` stores training files as `uploads/lora_data/<task>_<ts>_<name>`; per-tender pipeline runs via `subprocess` with env vars. |
+| `src/web_ui/static/index.html` (l. 344–361, 479–511) | `SCENARIOS = [name, margin_pct, win%_demo, class]` with **static demo win 69 / 63 / 49** (margins read from `params.stretch_bid_optimization.scenario_margins_pct`); `winAnchors` + piecewise-linear `winChance(margin)` interpolates the live "≈ N% win chance" next to the margin slider; tooltip literally says *"demo values until _3_Prediction connects"*. This is the consumer `_3` must replace. |
+| `src/_4_RecursiveImprovement/todo` | Lost-tender debrief ("why did it not pass") -> update the success-estimation model (with fallback/switch). `_3` must expose the retraining loop it feeds. |
+
+**Design consequence:** `_3_Prediction` is not a greenfield ML service — it is a repo-conventional step pipeline whose *serving* face is (a) a `recommended_bid_range` block in `calc.json` and (b) a win-curve the web UI interpolates in the browser, with the LoRA-version plumbing already designed in `ui_settings.json`.
+
+---
+
+## 2. Proposed architecture
+
+```
+                 ┌────────────────────────── _3_Prediction ──────────────────────────┐
+ external        │                                                                      │
+ sources         │  collect/                       features/                           │
+ simap.ch ────┐  │  step1_scrape.py   raw snapshots step1_features.py   feature matrix │
+ TED (EU) ────┼──┼─> step2_extract.py ────────────> (bids.jsonl) ──────> + labels      │
+ own CRM / ───┘  │  step3_curate.py  (LLM parse,     canonical           │             │
+ debriefs (_4)   │   dedupe, won/lost + why codes)  historical bids     ▼             │
+                 │                                              train/                 │
+                 │  models/                                     step2_baseline.py      │
+                 │  win_ratio/<version>/  <── adapters ──        (calibrated tabular)  │
+                 │  metrics.json                                step3_lora.py          │
+                 │                                               (peft/unsloth LoRA)    │
+                 │                                                      │             │
+                 │  predict.py  (one CLI entry, JSON in/out)  <─────────┘             │
+                 │    mode: heuristic | tabular | lora  (settings.yaml / env)        │
+                 └──────────────┬───────────────────────────────┬────────────────────┘
+                                │                               │
+              appends block to calc.json             curve for the live slider
+              (golden schema, subprocess              (web_ui proxies a route,
+               from web_ui recalc, like _2)             cached per tender)
+                                ▼                               ▼
+                    recommended_bid_range             winAnchors (min/mid/max)
+                    in tenders/<id>/calc.json         replacing demo 69/63/49
+```
+
+Four layers, each independently valuable (see step plan):
+
+1. **Data collection** — scraping + curation into a canonical `data/bids.jsonl`.
+2. **Feature store** — deterministic per-bid feature builder, schema-versioned.
+3. **Training** — calibrated tabular baseline first, LoRA fine-tune of the base LLM for the `win_ratio` task second (the settings UI already anticipates exactly this).
+4. **Serving** — one `predict.py` contract consumed by (a) `calc.json` enrichment and (b) a live web-UI endpoint. Prediction is *cheap and cached*: the browser keeps interpolating locally exactly as today; `_3` only supplies anchors.
+
+### File / dir layout (mirrors `_2_Calculator` conventions)
+
+```
+src/_3_Prediction/
+├── readme.md              # how everything works (like _2's)
+├── todo                   # exists
+├── settings.yaml          # mode: heuristic|tabular|lora; data/model dirs; anchors grid
+├── common.py              # loaders (calc.json, params, bids.jsonl, model registry)
+├── data/
+│   ├── raw/<source>/<id>.{html,pdf,json}   # scraped snapshots (gitignored)
+│   ├── bids.jsonl          # canonical historical bids (schema below)
+│   ├── features/           # built matrices + features_manifest.json
+│   └── clients.csv         # client registry: type, canton, sensitivity stat
+├── collect/
+│   ├── step1_scrape.py     # tender + award pages (simap, TED eForms)
+│   ├── step2_extract.py    # LLM/base-model parses raw -> candidate records
+│   └── step3_curate.py     # dedupe, won/lost labels + reason codes -> bids.jsonl
+├── train/
+│   ├── step1_features.py
+│   ├── step2_baseline.py   # calibrated logistic / GBM (stdlib-numpy only)
+│   └── step3_lora.py       # LoRA fine-tune, versioned adapter (torch+peft)
+├── predict.py              # the single serving entry: calc.json + margin grid -> JSON
+├── validate.py             # golden recommended_bid_range regression check
+├── output/                 # prediction.json artifacts, run metrics
+└── models/                 # adapters + metrics.json per version (gitignored)
+```
+
+Env overrides, matching the house pattern: `AUTOTENDER_CALC_OUT` (write into a tender's own calc.json), `AUTOTENDER_PRED` (`heuristic|tabular|lora|off`), `AUTOTENDER_PRED_MODEL` (adapter path/version), `AUTOTENDER_PRED_FEATURES` (JSON feature overrides — analogous to `AUTOTENDER_FACTORS`).
+
+---
+
+## 3. Data model for historical bids (`data/bids.jsonl`, one object per line)
+
+```json
+{
+  "bid_id": "b-2025-0117",
+  "schema_version": "1.0",
+  "source": "internal | simende | ted | debrief",
+  "source_url": "https://www.simende.ch/…",
+  "scraped_at": "2026-10-10T09:12:00Z",
+  "tender": {
+    "tender_id": "2025-ZH-0044",
+    "title": "Lüftung Sanierung Schulhaus",
+    "client": "Gemeinde Oberglatt", "client_type": "public_k12",
+    "canton": "ZH", "sector": "ventilation", "bkp": ["244"],
+    "procedure": "open | selective | negotiated",
+    "estimate_chf": 620000, "n_bidders": 4,
+    "submission_date": "2025-03-14"
+  },
+  "economics": {
+    "cost_baseline_chf": 557228.55, "our_bid_chf": 589000,
+    "our_margin_pct": 5.4,
+    "award_price_chf": 574000, "winner": "Rival B",
+    "relative_price_position": 1.026,
+    "competitor_gap_pct": -2.5
+  },
+  "outcome": "won | lost | withdrawn",
+  "why": {
+    "win_reason_codes": ["price", "references", "capacity_free"],
+    "loss_reason_codes": ["price", "technical_score"],
+    "narrative": "Debrief: competitor 2.5% cheaper on ductwork package…"
+  },
+  "context": {
+    "competitive_intensity": 0.62,
+    "client_price_sensitivity": "medium_high",
+    "strategic_appetite": "normal",
+    "capacity_utilization_pct": 70
+  },
+  "features_version": "1.0"
+}
+```
+
+Notes:
+
+- **The "why" is two-sourced**: public award notices give *prices and winner* (what), only internal debriefs and `--` later `_4_RecursiveImprovement` `--` give *reasons*. Reason codes are a fixed taxonomy (price, technical score, references, capacity, brand/spec match, risk, relationship) assigned by the extraction LLM, so they are aggregatable features, not free text.
+- `relative_price_position = our_bid / award_price` (or / median bid when all bids are known) is the single most predictive feature in classical bidding literature; it is normalized, so bids of different sizes compare.
+- `client_price_sensitivity` is *derived* per client from their award history (dispersion of award/estimate ratios) and stored in `clients.csv` — a stat, not a guess.
+- PII: private-client names stay internal; public bodies are fine. Raw HTML snapshots are gitignored.
+
+---
+
+## 4. The win-probability curve `P(win | price, features)`
+
+### 4.1 How it is produced
+
+1. **Inputs per tender:** `calc.json` (`project_cost.cost_baseline_chf`, scope mix, supplier-quote share), `meta.json` (client, region), plus slider/session values (overhead, waste) and feature overrides. Price comes from margin: `bid = baseline / (1 − margin)` (same formula `step4_project.py` and the browser use).
+2. **Model modes (settings.yaml / `AUTOTENDER_PRED`):**
+   - `heuristic` (v0, day one, stdlib): exactly the `stretch_bid_optimization` block — `P = clamp(ref 0.55 + appetite 0.05 + competition −0.05 − 0.05·Δprice%, 0.05, 0.95)` with `Δprice%` = distance of the bid from the reference-price anchor. Calibrated to reproduce the golden 0.69 / 0.63 / 0.49 at margins 2.5 / 4.0 / 6.5.
+   - `tabular` (v1): logistic regression or GBM with a **monotonic constraint** on relative price position (price up `->` P(win) never up), isotonic-calibrated on a held-out set. Serves in milliseconds; can stay stdlib/numpy.
+   - `lora` (v2): the base LLM (per `BASE_MODELS`) + the selected `win_ratio` adapter scores the serialized feature bundle (section 7). The numeric curve is still anchored to the calibrated tabular core — the LLM contributes the judgment layer and narratives, never raw uncalibrated numbers.
+3. **Curve materialization:** `predict.py` evaluates the model on a margin grid `0–15%` step `0.5` (the slider's exact range in `index.html`) and returns **anchor points**, plus the three scenario rows computed at the `scenario_margins_pct`. `expected_contribution_chf ≈ P(win) × (bid_price − cost_baseline)`. **Round-2 verification pinned the golden arithmetic:** `bid_price_chf = ceil(baseline/(1−margin) to commercial.round_to_chf=1000)` reproduces all three golden bids *exactly* (425117.06→426000, 431759.50→432000, 443303.87→444000 with baseline 414489.12), while the golden `expected_contribution_chf` values match `P×(bid−baseline)` only within ±0.7% (inconsistent sign) — no rounded/unrounded P×bid combination reproduces all three, so `validate.py` must use a tolerance (rel ±1% / abs ±100 CHF) or the golden must be regenerated from the implemented formula.
+4. **Uncertainty band:** every grid point carries `p_win: {min, mid, max}` — either quantiles from an ensemble / conformal bands, or (simpler, recommended v1) the model evaluated under worst / expected / best credible competition settings (the `+0.05 appetite`, `−0.05 competition` knobs already in params are exactly such scenario shifts). Monotonicity is enforced per band.
+
+### 4.2 How it is consumed — endpoints & JSON contract
+
+Two consumption paths, one producer:
+
+**(a) Batch — golden schema into calc.json.** Invoked by web_ui's `recalc` (subprocess, `AUTOTENDER_CALC_OUT` set), like `_2` steps. Writes:
+
+```json
+"recommended_bid_range": {
+  "model": {"task": "win_ratio", "version": "2026-10-12", "base": "GLM-4.6",
+            "kind": "tabular", "n_train_bids": 214},
+  "scenarios": [
+    {"scenario": "Aggressive",    "bid_price_chf": 426000, "margin_pct": 2.5,
+     "estimated_win_probability": 0.69, "expected_contribution_chf": 7986.03},
+    {"scenario": "Target",        "bid_price_chf": 432000, "margin_pct": 4.0,
+     "estimated_win_probability": 0.63, "expected_contribution_chf": 10951.01},
+    {"scenario": "Conservative",  "bid_price_chf": 444000, "margin_pct": 6.5,
+     "estimated_win_probability": 0.49, "expected_contribution_chf": 14418.68}
+  ],
+  "selection_logic": "Compare bid price, margin, estimated win probability and expected contribution."
+}
+```
+
+Field-identical to `expected_output_example.json`, so `validate.py` (golden regression) works the same way `_2`'s does, and the offer exports (PDF/HTML/DOCX) can print real scenario tables unchanged.
+
+**(b) Live — the slider.** New route in `web_ui/server.py` (proxying `predict.py` via subprocess, results cached per tender + factor set):
+
+```
+GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0
+200 {
+  "model": {"kind": "tabular", "version": "2026-10-12", "task": "win_ratio"},
+  "cost_baseline_chf": 557228.55,
+  "curve": [
+    {"margin_pct": 0.0,  "bid_price_chf": 557228.55,
+     "p_win": {"min": 0.86, "mid": 0.90, "max": 0.93},
+     "expected_contribution_chf": {"min": 47921, "mid": 50150, "max": 51822}},
+    …
+    {"margin_pct": 15.0, …}
+  ],
+  "anchors": [[2.5, 0.66, 0.69, 0.72], [4.0, 0.60, 0.63, 0.66], [6.5, 0.46, 0.49, 0.53]]
+}
+```
+
+`index.html` keeps `winChance()` untouched in spirit: it re-fills `winAnchors` from `anchors[…].mid` instead of the hardcoded `69/63/49`, shades a min–max band on the track, and drops the "demo values" tooltip. If `_3` is off/unreachable the UI **falls back to today's demo interpolation** — graceful degradation, no hard dependency. Cache + browser-side interpolation keeps the slider at zero perceived latency; the model is never called on `mousemove`.
+
+---
+
+## 5. What the slider's min / mid / max means
+
+The `_3` todo reads: *LoRA model for success (with selected `profit` on slider); on slider could be selected possible min, mid and max*. Two readings, and the design satisfies both:
+
+1. **Margin axis = profit.** The slider position is the selected profit (margin %); at any position the UI shows the win chance, exactly as today — but real.
+2. **min / mid / max = both an uncertainty band and the three preset profit points:**
+   - as a **band**: at each margin, `P(win)` is shown as `mid` with a `min–max` range (pessimistic/expected/optimistic competition scenario, or model quantiles). The current single number "≈63%" becomes "≈63% (60–66%)".
+   - as **preset anchors**: Aggressive / Target / Conservative remain the three preselectable profit positions on the track (the existing `sc-chip` buttons and `sc-dot` markers); each chip now displays its real (banded) win probability and expected contribution instead of the demo values.
+
+So: *select profit on the slider; the model answers with a banded win probability; the three chips are the min/mid/max profit presets with full scenario cards.* The scenario cards gain the fourth number the stretch goal asks for (`expected_contribution_chf`), letting the user see that the Conservative chip can have the highest contribution despite the lowest `P(win)` — the actual decision the tool must support.
+
+---
+
+## 6. LoRA training pipeline sketch
+
+- **Data**: `train/step1_features.py` renders each `bids.jsonl` row into a prompt/completion pair:
+  ```
+  ### Tender: school ventilation, ZH, public, est 620k CHF, 4 bidders
+  ### Position: bid 589k = +2.6% vs award median, margin 5.4%, capacity 70% free
+  ### Client: price sensitivity medium-high, prior wins 2/5 vs this client
+  ### History: 3 similar bids, 1 won at −1.2% vs median
+  Q: win probability at this price?
+  A: {"p_win": 0.34, "top_factors": ["relative_price_position", "n_bidders"]}
+  ```
+  Target is the binary outcome (or reason codes as an auxiliary task); the numeric head stays the calibrated tabular model.
+- **Fine-tune**: `train/step3_lora.py` — LoRA (r=16, α=32, attention+MLP) on the active base model from `ui_settings.base_model` (GLM-4.6 / GLM-4.5-Air / Llama-3.3-70B / Qwen3-32B — the exact list `server.py` offers), via `peft`/`unsloth`/LLaMA-Factory. Training data arrives through the **already-built** endpoint `POST /api/settings/upload-data?task=win_ratio` (files land in `uploads/lora_data/win_ratio_*`) plus `tasks.win_ratio.links` (the "provide links for tenders" field — those links feed `collect/step1_scrape.py`).
+- **Versioning**: adapter saved to `advanced.loras_dir/win_ratio/<version>` with `metrics.json` (AUC, Brier, calibration curve, n_train). The version is registered through the existing `POST /api/settings/update` flow — today that endpoint only fabricates a dated entry; `_3` makes it real (train, then register). Base-model changes invalidate adapters, which `server.py` already handles (versions filtered by `base`, kept but unselectable).
+- **Calibration gate**: a version becomes selectable only if held-out Brier improves on the incumbent; otherwise it is stored but not promoted (mirrors `_4`'s "allow fallback/switch").
+
+**Pragmatic note on LLM-vs-tabular**: raw LLM win probabilities are poorly calibrated and slow; the architecture keeps the LLM where it is strong (parsing award notices, reason-code extraction, narratives, few-shot judgment when data is tiny) and keeps `P(win)` numeric in a calibrated tabular model, with the LoRA layer as scoring/narrative enrichment. This matches the web UI's LoRA-per-task framing without betting the numbers on LLM numeracy.
+
+---
+
+## 7. Integration points (concrete)
+
+| Point | Change |
+|---|---|
+| `web_ui` settings `win_ratio` task | `_3` consumes `uploads/lora_data/win_ratio_*` + `links`; `/api/settings/update` triggers training and registers the real version; `predict.py` reads the selected version. |
+| `index.html` scenario block | `SCENARIOS[i][2]` and `winAnchors` come from `GET /api/tenders/<id>/wincurve`; chips show banded `% win` + contribution; keep demo values as fallback when `_3` off. |
+| `calc.json` | new top-level `recommended_bid_range` (golden schema) appended by `predict.py`; `GET /api/tenders/<id>` already returns the whole calc, so no server change needed for the batch path. |
+| Offer exports (`pdf/html/docx` in `server.py`) | scenario table can switch from margin-only to the full four-field scenario cards sourced from `recommended_bid_range`. |
+| `_2_Calculator` | none — `_3` only *reads* calc.json; cost baseline stays `_2`'s authority. |
+| `_4_RecursiveImprovement` | debrief outcomes append to `bids.jsonl` (label + why), then retrain; `_4` may also *switch* the active prediction model version (fallback). |
+| `project_parameters.json` | `stretch_bid_optimization` remains the heuristic config, the scenario margins, and the clamp bounds — the contract between heuristic and learned modes. |
+
+---
+
+## 8. Implementation step plan (each step shippable)
+
+1. **Skeleton** — `readme.md`, `settings.yaml`, `common.py`; `predict.py` in `heuristic` mode reproducing the golden `recommended_bid_range` from the params block; `validate.py` green. Stdlib only.
+2. **calc.json integration** — wire into web_ui `recalc` (subprocess + `AUTOTENDER_CALC_OUT`), so every tender carries real scenarios; extend export scenario cards.
+3. **Live curve** — `/api/tenders/<id>/wincurve` route + UI switch from demo anchors to real anchors (with fallback); per-tender caching.
+4. **Data collection** — `collect/step1–3`: simende/TED award scraping + internal CSV import (the internal history is the only source of cost + "why"); LLM extraction to reason codes.
+5. **Feature store + tabular model** — `train/step1–2`, calibrated logistic with monotonic price term; A/B against heuristic on backtests (would we have predicted past wins/losses?).
+6. **LoRA pipeline** — `train/step3_lora.py`, real version registration into `ui_settings` `win_ratio` task.
+7. **min/mid/max band + explanations** — UI band shading; curve payload gains `top_factors` and `similar_bids` for a "why this probability" popover.
+8. **`_4` feedback loop** — debrief ingestion, retrain trigger, model fallback/switch.
+
+## 9. Risks
+
+- **Data scarcity / cold start**: a regional HVAC unit accumulates only tens of bids/year; public sources give competitor prices but not our costs. Mitigation: heuristic default, pooling across similar tenders, heavy regularization, wide bands, human decision preserved.
+- **Scraping legality & ToS**: simap.ch is the official CH publication platform (simende.ch, cited in round 1, does not resolve at all — corrected); it is a JS single-page app, so collection needs headless rendering or XHR interception; rate-limit, cache, honor robots.txt (publication pages allowed); minimize personal data. TED/eForms and OCDS data are explicitly open; OpenTender's Swiss dump is CC BY-NC-SA (prototype only).
+- **Selection bias / feedback loop**: we only observe outcomes for bids we submitted; optimizing expected contribution can ratchet margins down. Mitigation: clamps from params (`0.05–0.95`), randomization-free but monitored deployment, `_4` audits.
+- **Concept drift** (market, inflation): recency-weight training; alert on calibration decay in `metrics.json`.
+- **LLM numeracy & latency**: uncalibrated probabilities, slow inference on slider moves. Mitigation: calibrated tabular core, cached curves, browser interpolation (as designed above).
+- **Golden-number pinning** *(resolved in round 2 — kept for history)*: the exact `expected_contribution_chf` arithmetic in `expected_output_example.json` turned out **not exactly reproducible** (±0.7% internal inconsistency); `validate.py` therefore pins the bid ceil-1000 rule exactly, probabilities to 2dp, and contributions with a rel ±1% tolerance (or the golden gets regenerated from the implemented formula).
+
+## 10. References
+
+**Repo**: `src/_3_Prediction/todo`; `materials/README.md` (stretch goal); `materials/project_parameters.json` (`stretch_bid_optimization`); `materials/expected_output_example.json` (`recommended_bid_range`); `src/web_ui/readme.md`; `src/web_ui/server.py` (TASK_KEYS, settings endpoints, `run_steps` env pattern); `src/web_ui/static/index.html` (SCENARIOS/winAnchors/winChance, scenario chips); `src/web_ui/ui_settings.json`; `src/_2_Calculator/readme.md`, `common.py`, `step4_project.py`; `src/_4_RecursiveImprovement/todo`; `notes.md` ("the most challenging part: best price for high win probability").
+
+**External** (via SearxNG, 2026-10-10): Open Contracting Data Standard registry — https://data.open-contracting.org/en/search/; TED / EU eForms procurement data — https://ted.europa.eu; Swiss official e-procurement platform — https://www.simap.ch (round-2 correction: round 1 cited simende.ch, which does not resolve); tender-data aggregation overview — https://groupbwt.com/blog/how-to-aggregate-tender-data/; Tabular Language Models survey — https://www.emergentmind.com/topics/tabular-language-models-tlms; LLM fine-tuning for price prediction — https://www.mdpi.com/2227-7390/13/15/2504; LoRA theory — https://arxiv.org/html/2605.19018v1; classical competitive-bidding models (Friedman 1956, Gates 1967, Carr 1982) from domain literature. Round-2 additions (all verified by direct fetch): see `## Round 2 - verification & changes` §H.
+
+---
+
+## Round 2 - verification & changes
+
+- **Date:** 2026-10-10 (round 2). **Agent:** context agent 3 of 6, same angle (architecture & pipeline design).
+- **Method:** re-read every repo artifact cited in round 1 and re-derived the golden arithmetic numerically (python3/Decimal); local SearxNG was up but the general engines (brave, google cse, duckduckgo) were still suspended from round-1 throttling, so deeper search ran through its arxiv / semantic-scholar engines (5 productive queries) plus direct `curl -sL` verification of primary pages (sklearn, LightGBM, XGBoost, arXiv, PMLR, PyPI, simap.ch, OCP registry, TED developer portal). Every URL in §H was fetched and returned 200 unless marked otherwise.
+
+### A. Repo facts re-verified — all confirmed
+
+1. `server.py:96-97` — `TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio")`, `BASE_MODELS = [GLM-4.6, GLM-4.5-Air, Llama-3.3-70B, Qwen3-32B]`. `_norm_settings` (l.118-139) keeps versions trained on another base stored but unselectable. Confirmed as described.
+2. `POST /api/settings/update` (`server.py:994-1009`) appends a dated version (same-day collision gets an `%H:%M` suffix), sets `selected`, persists `links`. **Live evidence:** `ui_settings.json` now contains `productivity_factors` versions `2026-10-10 15:21` and `15:22` — the endpoint is being exercised; the collision suffix path has fired. Also: `win_ratio` currently holds one version `2026-10-10` on base `GLM-4.5-Air` with `selected: null` — **`predict.py` must treat unselected as "fall back to heuristic"**, which is today's actual state.
+3. `POST /api/settings/upload-data` (`server.py:1010-1023`) stores raw bytes at `uploads/lora_data/<task>_<YYYYmmdd_HHMMSS>_<name>` exactly as round 1 claimed. The directory exists and is currently empty (no training data uploaded yet).
+4. Env plumbing: `AUTOTENDER_CALC_OUT` consumed in `_2_Calculator/common.py:23-24`; `AUTOTENDER_FACTORS` set by `run_steps` (`server.py:217-227`) and consumed in `step2_labour.py:26`. Confirmed.
+5. `static/index.html` — `SCENARIOS` with static demo win **69/63/49** at l.344-348, `winAnchors`/`winChance` (piecewise-linear) at l.349-361, refill from `params.stretch_bid_optimization.scenario_margins_pct` at l.479-485, tooltip *"demo values until _3_Prediction connects"* at l.495, slider `min=0 max=15 step=0.5` at l.499. All line references from round 1 re-checked and correct; the planned 0-15%/0.5 grid is exactly the slider's contract.
+6. `step4_project.py` — `calc.json` still terminates at `project_cost.cost_baseline_chf` / `indicative_selling_price_chf` (l.71-72), preceded by `example_subset_summary`. The `bid = baseline/(1−margin)` formula is identical in `step4_project.py:72`, `server.py:_offer_data` (l.463) and the browser (index.html l.635). Confirmed.
+7. `GET /api/tenders/<id>` (`server.py:929-937`) returns the whole calc — the batch path really needs no server change. Confirmed.
+8. `_4_RecursiveImprovement/todo` — debrief → update success-estimation model with fallback/switch. Confirmed (feeds round-1 §7 row).
+
+### B. Golden arithmetic pinned (round-1 risk resolved by measurement)
+
+Recomputed with `B = example_subset_summary.cost_baseline_chf = 414489.12` (Decimal):
+
+| Scenario | margin | `B/(1−m)` | ceil to 1000 | golden bid | P×(bid−B) | golden contrib | residual |
+|---|---|---|---|---|---|---|---|
+| Aggressive | 2.5% | 425117.06 | 426000 | 426000 | 7942.51 | 7986.03 | +0.545% |
+| Target | 4.0% | 431759.50 | 432000 | 432000 | 11031.85 | 10951.01 | −0.738% |
+| Conservative | 6.5% | 443303.87 | 444000 | 444000 | 14460.33 | 14418.68 | −0.289% |
+
+- **Bid rule verified exactly:** `bid_price_chf = ceil(B/(1−margin/100) / round_to) × round_to` with `round_to = commercial.round_to_chf = 1000` — a param that already exists in `project_parameters.json` and that round 1 never mentioned. All three golden bids reproduce to the franc. **No new config needed.**
+- **Probabilities:** the golden 0.69/0.63/0.49 are 2-dp rounded; implied unrounded values are 0.6938 / 0.6254 / 0.4886.
+- **Expected contribution is NOT exactly reproducible:** residuals vs `P×(bid−B)` are +0.55%/−0.74%/−0.29% (inconsistent sign); implied baselines (solving `contrib = P×(bid−B)`) are 414426 / 414617 / 414574 — spread ~190 CHF around 414489. No combination of {rounded, unrounded} P × {rounded, unrounded} bid pins all three. The golden file is internally consistent only to ≈±0.7%.
+- **Decision for `validate.py` (step 1 of the plan):** pin the bid ceil rule exactly, pin probabilities to 2 dp, check contribution with rel ±1% (or abs ±100 CHF) tolerance — or regenerate the golden file from the implemented formula and demote the current one to "indicative". Round-1 §9 risk downgraded from blocker to a one-line tolerance decision.
+- **Two baselines, one schema:** the golden block sits next to `example_subset_summary` (subset baseline, deliberately excludes services — see `step4_project.py` scope note), while production cost truth is `project_cost.cost_baseline_chf` (positions + services + allowances + overhead). Recommendation: `predict.py` consumes `project_cost.cost_baseline_chf`; `validate.py` reproduces the golden against the subset baseline.
+- **Heuristic anchor open point:** implied unrounded P ≈ `0.60 − 0.05·Δprice%` with a reference price ≈ 434.2k (≈ `B/(1−4.5%)`) to within ±0.002 — but `stretch_bid_optimization` nowhere defines the reference price for `Δprice%`, and `target_margin_pct` is 5.5 (whose indicative price 438.5k does *not* fit). Default proposal: reference = indicative selling price at `target_margin_pct`; confirm with product owner (open question F1).
+
+### C. Corrections old → new
+
+1. **simende.ch → simap.ch.** Round 1 called simende.ch "the Swiss tender publication platform" (§2 diagram, layout comment, §9 risks, §10 references). Round-2 check: `simende.ch` / `www.simende.ch` **do not resolve at all** (`getent` exit 2, curl exit 6) — same class of garbled lead agent 4 found for `sweq.ch`. `www.simap.ch` verified live (HTTP 200, redirects to `/en`, title "Search for publications"). Body of this report fixed in place; agent 4's operational facts adopted (JS SPA → Playwright/XHR interception; robots.txt allows publication pages; 2025 re-dev contract revoked → churn risk).
+2. **"expected_contribution must be reverse-pinned" → measured.** Round 1 hedged that the golden arithmetic "is not trivially reproducible". Round 2 measured it: bid rule exact (incl. `round_to_chf`), contribution not exact (±0.7%) → tolerance approach. §4.1(3) and §9 updated in place.
+3. No other round-1 repo claim failed verification — integration points listed in §7 all exist as described (see §A).
+
+### D. Conflicts with context_agent_4 — resolved
+
+1. **simende vs simap:** simap.ch wins on evidence (§C1); simende dropped everywhere.
+2. **Directory layout:** agent 4 proposed source-named collectors (`opentender.py`, `ted_sparql.py`, `simap_playwright.py`, `internal.py`); round 1 proposed `collect/step1–3`. **Resolution:** keep the step-numbered house convention (it is what `validate.py`, `run_steps` and the per-module `readme.md` pattern key off) but suffix by source, ordered by data value: `collect/step1_internal.py` (own bids — the only source with losing prices + "why"), `step2_opentender.py` (bulk cold-start seed; CC BY-NC-SA → prototype only), `step3_simap_ted.py` (incremental + the production-legal re-derivation). This also encodes agent 4's license finding as a *file ordering*.
+3. **Classical vs LoRA division of labor:** both reports agree the slider's probability must not come from the LLM. **Resolution — one merged ladder:** mode `heuristic` (<50 labeled internal bids) → `tabular` = strongly regularized, **Beta-calibrated** logistic (50–500; monotone price term) → GBM with **monotone constraints** (>500; still Beta/Venn-Abers-calibrated). The `win_ratio` LoRA exists from day one but as the *text layer*: parsing award notices, reason-code extraction, rationale narratives, and LLM-extracted features that feed the tabular core. `settings.yaml` keeps mode ∈ {heuristic, tabular, lora} because the UI task registry models a `win_ratio` adapter; **`lora` mode is defined as "tabular numeric core + LoRA rationale pass"** — a hybrid, never LLM-only numbers. Round-1 §6 calibration gate (promote only if held-out Brier improves) retained; it is exactly agent 4's "keep logistic as calibrated fallback".
+4. **Cold-start ladder:** agent 4's thresholds (<50: parametric prior on slope; 50–500: regularized/Bayesian logistic, bands from coefficient uncertainty; >500: GBM + calibration, bootstrap bands) adopted verbatim and mapped onto the modes above. Round-1's scenario-shift bands (worst/expected/best via the ±0.05 appetite/competition knobs) remain the v1 min/mid/max *while n is tiny*, then hand over to Venn-Abers/bootstrap bands.
+
+### E. Deepened research (primary sources verified this round)
+
+1. **Calibration for win-probability with tiny samples.**
+   - sklearn (fetched): isotonic is "more prone to overfitting, especially on small datasets" and only matches/beats sigmoid "with enough data (greater than ~1000 samples)" → Platt/Beta territory for our n, isotonic only past ~1000 rows.
+   - **Beta calibration** — Kull, Flach & Silva Filho, *"Beta calibration: a well-founded and easily implemented improvement on logistic calibration for binary classifiers"*, AISTATS 2017 (PMLR v54, page fetched, 200): a 2-parameter Beta family that strictly generalizes logistic/Platt, fixes both sigmoid- and inverse-sigmoid-shaped distortions, trivially fittable with least squares — the principled default at n ∈ [50, 500]. Companion: *"Beyond sigmoids …"* (DOI 10.1214/17-EJS1338SI).
+   - **Fresh tabular evidence** — Manokhin & Grønhaug, *"Classifier Calibration at Scale: An Empirical Study of Model-Agnostic Post-Hoc Methods"*, arXiv:2601.19944 (Jan 2026; abstract fetched): 21 classifiers incl. XGBoost/LightGBM/CatBoost on the TabArena tabular suite; **Venn-Abers predictors give the largest average log-loss reduction, followed closely by Beta calibration; Platt is weaker and less consistent**. Design consequence: `train/step2_baseline.py` gets Beta as the point calibrator and **Venn-Abers as the band producer** — Venn-Abers natively emits a per-example probability *interval* with distribution-free validity, i.e. exactly the todo's min/mid/max, from one calibrator. `venn-abers` PyPI package verified (v1.5.4, MIT).
+   - **Conformal context** — Angelopoulos & Bates, arXiv:2107.07511 (title+abstract fetched): split-conformal keeps finite-sample marginal coverage at *any* calibration size, but with tiny calibration sets the coverage variance is large → use conformal/Venn-Abers machinery for bands, not as the point estimate, and keep the scenario-shift bands until ≥50 labeled rows.
+2. **Monotonic constraints in GBMs for price curves.**
+   - LightGBM (Parameters.html fetched): `monotone_constraints` multi-int — `1` increasing, `−1` decreasing, `0` free — plus `monotone_constraints_method` (basic/intermediate/advanced). XGBoost (tutorials/monotonic.html fetched): constraints enforceable per feature, sold exactly as "use domain knowledge to improve predictive performance".
+   - For `_3`: `relative_price_position` → −1 (bid pricier ⇒ P(win) never up), `n_bidders` → −1, `capacity_utilization` → −1, log-size → 0. This encodes the business prior the 0.05/1% heuristic asserts, but *learned-slope, constrained-shape* — the direct upgrade path from the params block. In the logistic regime the same guarantee comes free from a sign-checked coefficient (add to `validate.py`).
+3. **Serving a margin-grid curve (endpoint caching, staleness).**
+   - No single canonical authority exists for "serve a curve, not a point"; the pattern round 1 designed matches what the feature-store/serving literature and this repo's own constraints imply, now made concrete: precompute the full grid (31 points, 0–15% step 0.5) per `(tender_id, factor-set hash)` at recalc time; cache the JSON keyed by that hash; browser keeps `winChance()` interpolation and **never calls the model on `mousemove`** (today's wiring already only recalculates locally on input).
+   - **Staleness contract (new, concrete):** the `/api/tenders/<id>/wincurve` payload carries `model {kind, version, task}`, `cost_baseline_chf` and `generated_at`; server invalidates when `calc.json` mtime or the overhead/waste/mode inputs change (factor-set hash mismatch); client refetches only on factor-input blur or after `recalc` completes. Heuristic/tabular scoring is sub-millisecond, so the cache exists for payload size and staleness clarity, not compute; vLLM `--enable-lora` (agent 4 §5) only enters the path in `lora` mode.
+4. **Bid-range recommendation in procurement practice.**
+   - Semantic-scholar sweep confirms the bidder-side ML literature clusters on: predicting **number of bidders** (e.g. DOI 10.1108/ci-10-2024-0325, Construction Innovation), **optimum markup** (ASCE JCEM "Evolutionary Simulation of Contractors' Learning and Behavior under Two Bid-Tendering Approaches" — "bidding and determining the optimum markup are the two major decisions"), and award-compliance screening on public procurement data. The consistent practitioner shape is a **bid range with expected-value comparison** — i.e. the golden schema's three scenarios + `expected_contribution`, not a single price.
+   - Tie-in: classical Friedman/Gates markup models maximize exactly `E[contribution] = P(win|bid)·(bid−cost)` — the same objective the golden schema encodes. **Principled upgrade:** once a curve is fitted, `Target` should be the argmax of expected contribution on the grid, with Aggressive/Conservative as fixed-margin brackets around it (params stay the fallback definition).
+
+### F. Open questions (new/updated)
+
+1. Reference-price anchor for `Δprice%` in heuristic mode — undefined in `stretch_bid_optimization`; golden implies ≈ `B/(1−4.5%)`; proposal: indicative selling price at `target_margin_pct` (5.5%). Product-owner decision.
+2. Production baseline for `recommended_bid_range`: `project_cost.cost_baseline_chf` (recommended) vs `example_subset_summary` (validate-only). Implementation detail to write into `predict.py`'s docstring.
+3. Golden-contribution tolerance vs golden regeneration (§B) — decide in step 1.
+4. Where real training triggers from: `/api/settings/update` growing a real train call (round-1 §7) vs a separate train entrypoint that then registers (agent 4 §5). Both keep `server.py`'s current fabricate-dates behavior until `train/step3_lora.py` exists.
+
+### G. Step-plan deltas (vs round-1 §8)
+
+- Step 1: `validate.py` pins ceil-1000 bid rule (via `round_to_chf`), 2-dp probabilities, ±1% contribution tolerance.
+- Step 3: wincurve cache key = hash(tid, overhead, waste, mode, model version); payload staleness fields per §E3; fallback to demo anchors when `selected = null` (today's live state).
+- Step 5: Beta calibration (point) + Venn-Abers (band) replace generic "isotonic-calibrated"; monotone constraint table documented in `readme.md`.
+- Step 6: `lora` mode defined as hybrid (numeric core + rationale pass), matching agent 4's evidence on LLM tabular weakness.
+
+### H. References added in round 2 (all fetched 200 unless noted)
+
+- sklearn probability calibration — https://scikit-learn.org/stable/modules/calibration.html
+- Kull/Flach/Silva Filho, Beta calibration, AISTATS 2017 — https://proceedings.mlr.press/v54/kull17a.html ; "Beyond sigmoids" — DOI 10.1214/17-EJS1338SI (verified via Semantic Scholar API)
+- Manokhin & Grønhaug, Classifier Calibration at Scale — https://arxiv.org/abs/2601.19944
+- Angelopoulos & Bates, A Gentle Introduction to Conformal Prediction — https://arxiv.org/abs/2107.07511
+- venn-abers package — https://pypi.org/project/venn-abers/ (JSON API)
+- LightGBM monotone constraints — https://lightgbm.readthedocs.io/en/latest/Parameters.html ; XGBoost — https://xgboost.readthedocs.io/en/stable/tutorials/monotonic.html
+- simap.ch (live, official CH platform) — https://www.simap.ch ; simende.ch: DNS non-resolving (dropped)
+- OpenTender Switzerland dataset — https://data.open-contracting.org/en/publication/91 (200) ; TED developer portal — https://developer.ted.europa.eu/home (200)
+- Construction bidder-side ML (via semantic-scholar engine): DOI 10.1108/ci-10-2024-0325 ; ASCE DOI 10.1061/(ASCE)ME.1943-5479.0000400
+
+---
+
+## Round 3 - implementation blueprint & integration
+
+- **Date:** 2026-10-10 (round 3). **Agent:** context agent 3 of 6. **Mission:** implementation-ready blueprint + cross-module integration (read `context_agent_1` and `context_agent_5` round-2 reports).
+- **Method:** golden arithmetic re-derived and **executed** with stdlib Decimal (script + output below); every repo line reference re-checked. SearxNG (127.0.0.1:8888) probed once, paced: up but engines still suspended (brave/google "too many requests", ddg timeout) — same state as rounds 1–2; no new external claims were needed, all external facts carried over are round-2-verified by direct fetch.
+
+### A. EXECUTION: golden bid-range reproduced exactly (residuals measured)
+
+Stdlib check (`python3`, Decimal, ROUND_CEILING/ROUND_HALF_UP) against `materials/expected_output_example.json` with `B = 414489.12` and only `project_parameters.json` knobs:
+
+| Scenario | margin | model bid | golden bid | **bid residual** | P mid | golden P | **P residual** | model contrib | golden contrib | **contrib residual** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Aggressive | 2.5 | 426000 | 426000 | **0 CHF** | 0.69 | 0.69 | **0.00** | 7997.14 | 7986.03 | **+11.11 CHF (+0.139%)** |
+| Target | 4.0 | 432000 | 432000 | **0 CHF** | 0.63 | 0.63 | **0.00** | 10968.15 | 10951.01 | **+17.14 CHF (+0.157%)** |
+| Conservative | 6.5 | 444000 | 444000 | **0 CHF** | 0.49 | 0.49 | **0.00** | 14448.36 | 14418.68 | **+29.68 CHF (+0.206%)** |
+
+Worst case: bid 0, probability 0.00 (2dp), contribution +29.68 CHF = +0.206% — round 2's ±1% tolerance tightens to **rel ±0.5% / abs ±50 CHF** in `validate.py`. The contribution residual is systematically positive (golden implied baselines spread 414426–414617 vs our 414489.12) — that is the golden file's internal inconsistency, not model error; no formula beats it.
+
+**The formula that reproduces the golden file (all three scenarios exact on bids and probabilities):**
+
+```
+bid(m)     = ceil_to( B / (1 − m/100), round_to=1000 )           # commercial.round_to_chf
+indicative = B / (1 − target_margin_pct/100)                     # = 438612.83 (5.5%)
+R          = ceil_to( indicative, 100 ) = 438700                  # reference price anchor
+Δprice%    = (bid / R − 1) × 100                                  # on the ROUNDED bid
+P0         = 0.55 + 0.05 − 0.05 = 0.55                            # ref_prob + appetite + competition
+P(offset)  = clamp( P0 + offset − 0.05 × Δprice%, 0.05, 0.95 )
+   mid = P(0);  min = P(−0.05) [competition];  max = P(+0.05) [appetite]
+contribution = P_mid_unrounded × (bid − B),  rounded half-up 2dp
+```
+
+Exactness facts established by execution (all new this round):
+
+1. **`P(R) = 0.55` exactly** — with `P0 = 0.55`, `reference_win_probability` gains a precise semantic: *win probability at the reference price*, and the appetite/competition knobs become the min/max band generators. Round-2 F1 ("reference anchor undefined") is **resolved**: reference price = indicative selling price at `target_margin_pct`, rounded up to 100 CHF. (Round-2's "indicative ≈ 438.5k does not fit" contained a hand-arithmetic slip: 414489.12/0.945 = **438612.83**, and ceil-100 of that = 438700 fits.)
+2. **Feasible-R windows** (values of R for which all three golden probabilities round correctly at 2dp): `P0=0.55 → R ∈ [438579, 438722]` (width 144 CHF = 0.033%); `P0=0.60 → R ∈ [434171, 434250]`. Chosen R = 438700 sits inside window 1 (22 CHF below its upper edge). `validate.py` re-derives R, never hardcodes it.
+3. **Margin-space model is impossible**: a slope s on margin would need s ∈ (0.0333, 0.0467) from 2.5→4.0 but s ∈ (0.052, 0.06) from 4.0→6.5 — empty intersection. The golden probabilities are linear in **price**, not margin. (Rules out the naive "P vs margin" reading of the params.)
+4. **Unrounded bids are impossible**: P computed on `B/(1−m)` has bid-gap ratio 1.74 < 1.857 (the minimum feasible ratio from the 2dp golden bounds) — so the golden P was computed on the **published (ceil'd) bids**. `predict.py` must evaluate P at the rounded bid.
+5. Clamp `[0.05, 0.95]` fires on the slider grid only at margins 14.5 and 15.0 (bid 487k/488k).
+6. Expected-contribution argmax on the heuristic grid is at **8.0% margin** (outside the 2.5/4/6.5 presets) — the round-2 §E4 "Target = argmax" upgrade must wait for the learned curve; v0 keeps params margins authoritative.
+
+### B. Final file tree for `src/_3_Prediction`
+
+```
+src/_3_Prediction/
+├── todo, readme.md             # module doc: run order, env vars, math
+├── settings.yaml               # mode: heuristic|tabular|lora|off; paths; grid; collection
+├── common.py                   # loaders + bid/probability math (section C)
+├── predict.py                  # serving entry: calc.json -> golden block + curve
+├── validate.py                 # golden regression: bids exact, P 2dp exact, contrib ±0.5%
+├── collect/
+│   ├── step1_internal.py       # web_ui/tenders/*/outcome.json + calc.json -> bids.jsonl
+│   ├── step2_opentender.py     # bulk cold-start seed (CC BY-NC-SA: prototype only)
+│   └── step3_simap_ted.py      # live award enrichment: n_bidders, winner, price
+├── features/build.py           # bids.jsonl (+ _4 auto JSONL) -> features.jsonl + manifest
+├── train/
+│   ├── step1_baseline.py       # logistic + Beta calibration (point) + Venn-Abers (band)
+│   └── step2_lora.py           # win_ratio LoRA = rationale/text layer, never the number
+├── data/{raw/<source>/, bids.jsonl, features/, clients.csv}   # raw gitignored
+├── models/win_ratio/<version>/ # adapter + metrics.json sidecar (gitignored)
+└── output/                     # prediction.json artifacts, run logs
+```
+
+Env overrides (house pattern): `AUTOTENDER_CALC_OUT` (tender calc.json to read/append), `AUTOTENDER_PRED_OUT` (sidecar `prediction.json` path), `AUTOTENDER_PRED` (`heuristic|tabular|lora|off`), `AUTOTENDER_PRED_MODEL` (version), `AUTOTENDER_PRED_FEATURES` (JSON overrides, analogous to `AUTOTENDER_FACTORS`).
+
+### C. `common.py` + `predict.py` signatures (normative)
+
+```python
+# common.py
+BASE; DATA = BASE/"data"; BIDS = DATA/"bids.jsonl"; MODELS = BASE/"models"
+def D(x) -> Decimal;  def r2(x) -> float                 # copied from _2_Calculator/common.py
+def load_settings() -> dict                              # settings.yaml (pyyaml)
+def load_params(settings=None) -> dict                   # materials/project_parameters.json
+def load_calc(path=None) -> dict                         # AUTOTENDER_CALC_OUT aware
+def load_bids(path=None) -> list[dict]
+def effective_mode() -> str                              # env AUTOTENDER_PRED > yaml mode; 'off'
+def resolve_model() -> dict | None                       # ui_settings win_ratio.selected; None -> heuristic
+def ceil_to(x: Decimal, step: int) -> int
+def indicative(baseline: Decimal, params: dict) -> Decimal
+def reference_price(baseline: Decimal, params: dict) -> Decimal   # ceil_to(indicative, 100)
+def scenario_bid(baseline: Decimal, margin_pct, round_to: int) -> int
+def p_heuristic(bid: int, ref_price: Decimal, params: dict, offset: Decimal = 0) -> Decimal
+def expected_contribution(bid: int, baseline: Decimal, p: Decimal) -> float
+
+# predict.py
+def build_features(calc: dict) -> dict          # n_positions, supplier_share, w_match_conf...
+def curve(baseline, ref, params, grid=(0, 15, 0.5), knobs=(0.05, 0.05)) -> list[dict]
+def anchors(curve: list, scenario_margins: dict) -> list[list[int]]   # [m, min%, mid%, max%]
+def golden_block(baseline, params) -> dict      # recommended_bid_range, golden schema
+def main()                                      # --mode --curve --overhead --waste
+
+# collect/step1_internal.py
+def row_from_tender(tender_dir: Path) -> dict | None     # outcome.json + calc.json join
+def main(tenders_dir: Path = WEB_UI_TENDERS) -> None
+# features/build.py
+def features_from_bid(bid: dict, clients: dict) -> dict  # deterministic, versioned
+def main(sources: list[Path], out: Path) -> None
+# train/step1_baseline.py
+def fit(X, y, sample_weight=None) -> "LogisticCal"       # sign-checked price coefficient
+def calibration_report(model, X, y) -> dict              # Brier + reliability bins
+def save(version_dir: Path, metrics: dict) -> None       # metrics.json sidecar
+```
+
+### D. Canonical `data/bids.jsonl` v1.1 (field | type | source)
+
+| Field | Type | Source |
+|---|---|---|
+| `bid_id`, `schema_version`, `features_version` | str | internal (`"1.1"`, `"1.0"`) |
+| `source` | enum | `internal \| simap_api \| ted \| opentender \| debrief` |
+| `source_refs.{simap_project_id, simap_publication_id}` | uuid? | simap API `/api/publications/v1|v2` |
+| `source_refs.ted_publication_number` / `.ocid` / `.tender_dir` | str? | TED `publication-number` / OpenTender `ocds-70d2nz-…` / `web_ui/tenders/<id>` |
+| `tender.{title, client, client_type, canton, bkp[], procedure}` | str/enum/list | simap project-search / TED / `_1` output |
+| `tender.estimate_chf` / `submission_date` | float?/date | simap / TED / internal |
+| `tender.n_bidders` | int? | **simap `decision.numberOfSubmissions`** / TED `received-submissions-type-val` |
+| `economics.cost_baseline_chf` | float | **`calc.json project_cost.cost_baseline_chf`** |
+| `economics.our_bid_chf` / `our_margin_pct` | float | **`outcome.json`** (`_4`) |
+| `economics.award_price_chf` / `winner` | float?/str? | simap `decision.vendors[0].price.price` / TED `BT-711-LotResult`, `winner-name` |
+| `outcome` | enum | **`outcome.json.outcome`** (`won\|lost\|withdrawn`) |
+| `why.{loss_reason, win_reason_codes[], narrative}` | enum?/list/str? | `_4` debrief + buyer-side `awardDecisionJustification` (LLM-coded) |
+| `context.competitive_intensity` / `client_price_sensitivity` | float?/enum | derived, `data/clients.csv` |
+| `context.capacity_utilization_pct` | int? | internal |
+| `context.models_used` / `provenance.win_estimate` | dict | `_4` snapshot: predicted P + version ids at submission |
+| `provenance.{scraped_at, raw_path}` | ts/str | internal (verbatim snapshot caching) |
+
+### E. Feature definitions (tabular tier; name | source | dtype | monotone sign)
+
+| Feature | Source | Dtype | Monotone |
+|---|---|---|---|
+| `log_relative_price_position` = log(our_bid / award_median-or-winner) | economics | float | **−1** |
+| `n_bidders` | simap/TED | int | **−1** |
+| `log_bid_chf` | economics | float | 0 |
+| `margin_pct` | outcome | float | 0 (proxied by price position) |
+| `supplier_share_direct_cost` | calc.json `price_source=="supplier_package"` | float | 0 |
+| `weighted_match_confidence` | calc.json position_results | float | 0 (+ expected) |
+| `review_share` | calc.json `review_required` | float | 0 |
+| `client_type` / `canton` one-hots | tender | int | 0 |
+| `competitor_median_delta_pct` | `_4` observations (Beta posterior) | float | **−1** |
+| `capacity_utilization_pct` | internal | int | **−1** |
+| `competitive_intensity` | derived (client award dispersion) | float | −1 optional |
+
+Logistic tier enforces signs via coefficient sign checks in `validate.py`; GBM tier via `monotone_constraints` (round-2 §E2). Optional `_1`-sourced extras when `../_1_AI_InputProcessing/output` exists: systems count (244.xx mix), category entropy, manufacturer-hint density.
+
+### F. `GET /api/tenders/<id>/wincurve` response contract (exact JSON, golden baseline)
+
+```
+GET /api/tenders/<id>/wincurve?overhead=8.5&waste=4.0        (defaults = params)
+200 {
+  "model": {"kind": "heuristic", "task": "win_ratio", "version": "params-v0", "selected_lora": null},
+  "inputs": {"overhead_pct": 8.5, "waste_pct": 4.0,
+             "cost_baseline_chf": 414489.12,      # recomputed like index.html l.634
+             "reference_price_chf": 438700, "generated_at": "2026-10-10T…"},
+  "curve": [
+    {"margin_pct": 0.0,  "bid_price_chf": 415000,
+     "p_win": {"min": 0.77, "mid": 0.82, "max": 0.87},
+     "expected_contribution_chf": {"min": 393.44, "mid": 418.98, "max": 444.52}},
+    … 31 points, margins 0–15 step 0.5 (slider's exact range, index.html l.499) …
+    {"margin_pct": 15.0, "bid_price_chf": 488000,
+     "p_win": {"min": 0.05, "mid": 0.05, "max": 0.05}, …}        # clamp fires here
+  ],
+  "anchors": [[2.5, 64, 69, 74], [4.0, 58, 63, 68], [6.5, 44, 49, 54]]
+}
+404 {"error": "tender not found"}   |   503 {"error": "prediction off"}  (mode=off)
+```
+
+`anchors` rows are `[margin_pct, p_min%, p_mid%, p_max%]` as **integer percent** — the exact shape `winAnchors`/`winChance` (index.html l.349–361) consume today (`winAnchors = anchors.map(a => [a[0], a[2]])`). Monotone bands guaranteed per construction (same Δ offset at all grid points).
+
+### G. web_ui integration diffs
+
+**`server.py`** (2 changes; `GET /api/tenders/<id>` untouched — batch path rides calc.json):
+1. `PRED_DIR` next to `CALC_DIR`; `calc_tender()` step list gains a 5th entry `[(str(PRED_DIR / "predict.py"), [])]` — `run_steps` (l.217–227) already runs any script path with `cwd=CALC_DIR` + `AUTOTENDER_CALC_OUT`, so `recommended_bid_range` lands in every calc.json on recalc (l.230–238, 1038–1044).
+2. New GET branch after the `pdf` branch (l.947–980): `parts[3] == "wincurve"` → parse `overhead`/`waste` from query (pattern of l.957–959), in-memory cache keyed `(tid, overhead, waste, calc mtime)`, miss → `subprocess.run([sys.executable, predict.py, "--curve", "--overhead", …, "--waste", …], env={AUTOTENDER_CALC_OUT})`, JSON from stdout. Heuristic scoring is sub-ms; the cache is for payload size + staleness. Offer painters gain 4-field scenario cards as a follow-up.
+
+**`static/index.html`** (fallback-first, ~20 lines):
+- Keep l.344–349 demo `SCENARIOS`/`winAnchors` (69/63/49) as the **fallback state**; add `let winBand = null; let predBadge = "";`.
+- After the l.479–485 params refill, fetch `/api/tenders/<id>/wincurve?overhead=<ov>&waste=<wa>` (async, non-blocking). On 200: `winAnchors = wc.anchors.map(a => [a[0], a[2]])`; `winBand = wc.anchors`; `SCENARIOS[i][2] = mid%`; re-render chips/dots with `~${mid}% (min–max)`; **drop the "demo values until _3_Prediction connects" tooltip** (l.495); show `predBadge = "baseline heuristic — no compatible LoRA"` when `model.selected_lora == null` (today's live state, wording from `_4`). On error/503: **keep demo values + tooltip** (graceful degradation).
+- `winChance()` and the slider handler stay untouched — browser interpolation, model never called on `mousemove`. Band v1: `sc-win` becomes `≈ N% (L–H)%` via piecewise interpolation over `winBand` columns 1/3.
+
+### H. Cross-module composition (after reading round-2 `_1` and `_4` reports)
+
+| Direction | Contract |
+|---|---|
+| `_1` → `_3` | No hard dependency: `_2` already copies `price_source`/`match_confidence` into calc.json `position_results` (0.92/0.72 constants until `_1` writes real `match_score`). `build_features()` reads calc.json only; richer `_1` features (system mix, category entropy from `tender_lv_output.json`) are optional add-ons when `../_1_AI_InputProcessing/output` exists. |
+| `_2` → `_3` | Read-only on calc.json; cost baseline stays `_2`'s authority. `_3` appends exactly one top-level block (`recommended_bid_range`) — same growing-JSON discipline as `step1–4`. |
+| `_4` → `_3` | (a) `tenders/<id>/outcome.json` is the **label source of truth** — `collect/step1_internal.py` scans it (won/lost, our_bid, winner price, `price_position_pct`, `loss_reason`, `models_used.win_estimate`); (b) `_4` auto-appends training rows to `uploads/lora_data/win_ratio_*_auto.jsonl` — `train/step2_lora.py` consumes that directory (same path the existing upload endpoint writes); (c) promotion: `_3` never trusts `selected` blindly — `resolve_model()` returns None → heuristic fallback (live state today: `win_ratio.selected = null`, base mismatch); (d) `_4`'s competitor Beta posteriors feed `competitor_median_delta_pct`; (e) `_norm_settings` **strips extra version fields** (`server.py` l.132–135) — so model state (metrics, eval, shadow) lives in `_3`'s `models/<version>/metrics.json` sidecar, never in `ui_settings.json` version dicts. |
+| `_3` → `_4` | `predict.py` output persisted at submission time is the `win_estimate` `_4` backtests on (champion/challenger Brier replay); `metrics.json` per version is the eval input for the promote gate; curve `top_factors`/`similar_bids` (step 7) feed the "why this probability" popover and `_4` post-mortems. |
+| web_ui settings | `tasks.win_ratio.links` feeds `collect/step3_simap_ted.py`; `POST /api/settings/update` stays the registration surface, but must route through `_4`'s `register_lora_version()` refactor once real training lands (never raw, which auto-selects at l.1007). |
+
+### I. Remaining gaps (honest list)
+
+1. **Submission capture point**: `win_estimate` storage needs `_4`'s `POST /api/tenders/<id>/outcome` (no submitted state exists in the UI yet) — until then bids.jsonl internal rows come only from manual outcome records.
+2. **`ui_settings` version schema** (seq/status/eval passthrough or sidecar) is an `_4`-owned prerequisite for a real version registry; `_3` designs around it via the metrics sidecar.
+3. **Training trigger** still fabricates dated versions (`server.py` l.1003–1007) until `train/step2_lora.py` + the register refactor land.
+4. **Band width**: ±0.05 knobs → ±5 pp probability band is wide but honest; consider 0.5× scaling or Venn-Abers bands once ≥50 labeled rows exist.
+5. **collect/step2_opentender** is prototype-only (CC BY-NC-SA); production data must re-derive from simap API (commercial use permitted per AGB) + TED.
+6. **simap quirks** (agent 4, verified): `newestPubTypes=award` → 400 E0025 (filter client-side), bare `search` → 400 E0003, throttle ≤1 req/s, cache raw JSON.
+7. Golden contribution tolerance set to rel ±0.5% / abs ±50 CHF (residuals +0.14…+0.21%); alternatively regenerate the golden from the implemented formula and demote the current one to "indicative" — one-line product-owner decision carried from round 2.

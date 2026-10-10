@@ -1,0 +1,546 @@
+# Context Agent 2 - Technology & Tooling Research
+
+- **Date:** 2026-10-10 (round 2 doc-verification + round 3 live-execution validation same day —
+  see `## Round 2 - verification & changes` and `## Round 3 - execution validation`)
+- **Module:** `src/_1_AI_InputProcessing`
+- **Agent:** 2 of 6
+- **Angle:** concrete libraries, models and techniques with trade-offs (not architecture)
+- **Sources:** round 1: local SearxNG + tender-PDF inspection. Round 2: every license / version /
+  capability claim below was re-checked against primary sources (PyPI JSON API, GitHub repo/license
+  API, raw READMEs, HuggingFace model API + model cards, arxiv title pages); exact sources listed
+  in the Round 2 section. Round 3: the recommended tools were **installed and actually run**
+  against the real materials (pypdf split, pdfplumber table strategies, rapidfuzz matching,
+  inference-stack probe, SearxNG probe); commands + outputs in the Round 3 section.
+- **Evidence markers:** **[EXEC]** = validated by running it on this machine against the real
+  materials (Round 3); **[DOCS]** = documentation/primary-source verified only.
+
+## Ground truth about the input (drives every choice)
+
+- `materials/BKP_244_LV_Lueftung_260804.pdf`: **202 pages**, born-digital (Producer: DynaPDF),
+  has a real text layer, **German**. Page 78 contains a table with headers
+  `Pos. / Gegenstand / Mass-... / Einheits-...` and a running system title `244.01 LA01 Nebenräume`
+  plus `Seite 10 / 20` (i.e. per-system page numbering). **No OCR needed**; borderless-table
+  extraction and header-based sectioning are the real problems.
+- Output targets: `example_lv_positions.csv` schema (12 cols, English descriptions, DN/WxH
+  dimensions, manufacturer hints) and `catalog.csv` (r3-exec-counted: **56 product rows**, 5 distinct
+  categories of matching key: category, manufacturer, model, dimension-string, install_code).
+- Repo philosophy: stdlib-first (`_2_Calculator` is stdlib+pyyaml; `web_ui` is pure stdlib, Python
+  3.13). Any dependency must be justified and small. `web_ui` already persists **LoRA-per-task**
+  settings (`ui_settings.json`: base model, model/lora/cache paths, dated versions per task).
+
+---
+
+## 1. PDF libraries
+
+| Lib | Role | License (r2-verified) | Version / status (r2) | Fit here |
+|---|---|---|---|---|
+| **pypdf** | text extract, merge/split, page ranges | BSD-3-Clause (PyPI `license_expression`) | 6.20.0 (2026-10-09), very active, pure Python, Py>=3.9 | **[EXEC r3]** chosen for todo-2 splitting — executed: 29 pages in 0.09 s, split text md5-identical to source; weak tables (confirmed) |
+| **pikepdf** | lossless page manipulation via qpdf | MPL-2.0 (GitHub + PyPI) | 10.16.0 (2026-09-29), very active, needs Python>=3.11 + qpdf native lib | **[DOCS]** fidelity/repair fallback — not needed, pypdf split was lossless (r3) |
+| **pdfplumber** | text + words + lines/rects with coordinates, Tabula-style table finder | MIT (GitHub + PyPI classifier) | 0.11.10 (2026-06-15), active; tested Py 3.10-3.14; built on pdfminer.six | **[EXEC r3]** best for LV tables, but with an r3 usage correction: `find_tables` alone fails on the borderless body — winning recipe is default-strategy header geometry + `extract_words` x-bucketing (Round 3 §3) |
+| **PyMuPDF (fitz)** | fastest text/render/tables | **AGPL-3.0** (GitHub API) | 1.28.2 (2026-08-06), very mature | **[DOCS]** fastest and best raw text quality per benchmarks, but AGPL contaminates a commercial tender tool |
+| **camelot** | dedicated table extraction | MIT (GitHub API) | **2.0.0 (2026-06-04), actively maintained again** (pushed 2026-10-06); backend now `playa-pdf`; Ghostscript is now an *optional* extra; `opencv-python-headless` still a base dep; new optional `flavor="ml"` (Table Transformer, torch extra) explicitly for **borderless tables**; render-free `engine="vector"` lattice | **[DOCS]** fallback tier — NOT needed: pdfplumber recipe already recovers the LV rows (r3) |
+| docling / marker / olmOCR | full document->Markdown/JSON pipelines, layout models | MIT / Apache-2.0 code + **OpenRAIL-M weights** (free for research/personal/startups <$5M revenue, paid beyond) / Apache-2.0 | all active (docling 68.6k stars, marker 40.4k) | **[DOCS]** heavy (torch, model downloads, GBs); overkill for a born-digital, table-centric tender — and marker weights carry a commercial-use condition |
+
+Benchmarks agree: PyMuPDF/pypdfium2 win raw text speed; pdfplumber/pypdfium2 win usable table
+structure; camelot wins only on ruled tables with tuned flavors. The tender's LV tables are
+borderless-ish (word-aligned), which is exactly pdfplumber's `text` strategy territory. **(r3
+correction: the pure `text` strategy splits words mid-token on this PDF; see Round 3 §3 for the
+recipe that actually works.)**
+
+**Recommendation (round 2, conflict with sibling resolved; r3-executed):** `pdfplumber`
+(tables+coords, only when needed) + **`pypdf` for splitting** — the sibling architecture report
+(context_agent_1, todo-2 `step2_split.py`) uses pypdf, and on verification pypdf is the better
+stdlib-first fit: pure Python (no qpdf native binary), BSD-3, released literally yesterday
+(6.20.0). pikepdf stays a documented fallback for repair/exotic-feature fidelity, not a v1 dep.
+Text for the page map keeps the sibling's `pdftotext -layout` (poppler CLI, already installed,
+zero Python deps); pdfplumber enters only for coordinate-level table work. Avoid PyMuPDF unless
+the team accepts AGPL/commercial cost. Do not pull docling/marker/olmOCR — they solve
+scanned-document problems this PDF does not have. **Round 3 executed both layers end-to-end
+(split + table recovery) — this recommendation is now execution-verified, with the pdfplumber
+usage correction above.**
+
+## 2. LLM for a 202-page document
+
+Est. tokens: ~3 MB PDF ≈ 300-500 K chars ≈ **100-180 K tokens** full text. Fits a 200 K window in
+one shot, but per todo the document is *sectioned* anyway, which is better for accuracy and for
+parallel per-section agents.
+
+| Option | What | Context | License | Trade-off |
+|---|---|---|---|---|
+| **Z.ai GLM-4.6 API** (or via OpenRouter) | hosted frontier open-weight model | 200 K (r2: confirmed via unsloth GLM-4.6 card: "expanded from 128K to 200K") | proprietary API terms | **[DOCS]** best quality/effort ratio, but tender data leaves the machine (client confidentiality!) — r3 note: on current dev hardware this is the only immediately runnable quality option |
+| **llama.cpp `llama-server`** (current release **v0.6.0**, 2026-10-05) | local GGUF inference, OpenAI-compatible API, **`response_format {"type":"json_schema","schema":{...}}`**, `--lora` (comma-separated multi-adapter), `--lora-scaled`, **`--lora-init-without-apply` + `POST /lora-adapters` + per-request `lora:[{id,scale}]`** | model-dependent | MIT | **[DOCS — not installed here (r3: no binary, no ports, no models; GTX 1050 Ti 4 GB / 14 GB RAM cannot run the recommended GGUFs)]** production target; CPU/one-GPU class; runtime, per-request LoRA selection = plugs directly into web_ui per-task settings without server restarts (caveat: requests with different LoRA configs are not batched together) |
+| **Ollama** | wrapper over llama.cpp, REST + OpenAI-ish | `glm4:9b` = GLM-4-9B-Chat, 5.5 GB, **128 K** (r2: confirmed on ollama.com/library/glm4) | MIT | **[DOCS — not installed (r3)]** easiest ops, but runtime LoRA-per-request is awkward (Modelfiles, adapter baked per model); 5.5 GB model would swap on this box |
+| **vLLM** | batched GPU serving, structured outputs via xgrammar/outlines/lm-format-enforcer (docs URL verified 200) | model-dependent | Apache-2.0 | **[DOCS]** best throughput for parallel per-section agents; needs a real GPU and torch stack — this machine has none |
+| Long-context APIs (Claude 200K-1M, Gemini 1M+, GPT-4.1 1M) | hosted | huge | proprietary | **[DOCS]** same privacy issue as GLM API; paid per token |
+
+**GLM GGUF reality check (round 2, HF API — changes the round-1 picture):**
+
+- `unsloth/GLM-4.6-GGUF` exists (the `web_ui` base_model) but GLM-4.6 is **355 B**: UD-TQ1_0
+  alone is 84 GB, Q4-class ~200 GB — big-RAM-server only, not a workstation option.
+- The practical local GLM is **GLM-4.7-Flash (30B-A3B MoE, MIT)** — `unsloth/GLM-4.7-Flash-GGUF`,
+  ctx 202752 (~200 K), 8.3 GB (UD-TQ1_0) … ~18 GB (Q4): 24 GB GPU / 32 GB Mac territory.
+  Pruned `GLM-4.7-Flash-REAP-23B-A3B` (-25 %, near-lossless) also ships GGUFs.
+- Flagship-Flash is GLM-5.3-Flash (320B-A18B, MIT, multimodal; most-downloaded GLM GGUF) but
+  needs bleeding-edge llama.cpp (PR #27754) and 80+ GB RAM. `zai-org/glm-edge-4b-chat-gguf`
+  (tiny) is license `other: glm-4`, **not** MIT — deprioritized.
+- Training contract: HF safetensors LoRAs need `convert_lora_to_gguf.py` (in llama.cpp root).
+
+**Recommendation (r2; amended by r3 hardware reality):** default to **llama.cpp server** (local,
+OpenAI-compatible, JSON-schema constrained, runtime LoRA selection — see below). Base model
+tiering by hardware: GLM-4.7-Flash for workstation boxes, `glm4:9b`-class on small machines,
+GLM-4.6 GGUF only if a big server exists. Keep the client stdlib (`urllib.request` against
+`http://127.0.0.1:8080/v1/chat/completions`); Z.ai API stays an opt-in "quality mode", off by
+default for confidentiality. **r3 amendment: this dev machine has NO inference stack (no
+llama-server/ollama/vllm, ports closed, no models) and a 4 GB GTX 1050 Ti + 14 GB RAM (5 free) —
+GLM-4.7-Flash does not fit; v1 development = opt-in hosted API or a 1-3 B CPU smoke model, and
+the base URL must be configurable (`AUTOTENDER_LLM_BASE_URL`) so dev-hosted and prod-local share
+one stdlib client (re-verify `response_format` per hosted provider; only llama.cpp's shape is
+verified). The llama-server plan stands as the production target.**
+
+## 3. Document sectioning (todo step 1)
+
+| Approach | What | Cost | Fit |
+|---|---|---|---|
+| **Heuristic on page text** | regex/keyword scan of each page's first lines for system headers (`244.xx LAyy ...`, `Seite n / m`), TOC, chapter keywords | ~free, deterministic | the PDF literally prints the system on every page — highest precision signal available |
+| **Layout-analysis model** | DocLayNet-trained detectors (YOLO-family, e.g. `hantian/yolo-doclaynet`, docling LayoutModel); 11 classes (tables, text, captions...) | torch + ultralytics dep | gives table/page-type maps; useful later for table-region hints, not needed for boundaries |
+| **LLM sectioning** | feed per-page summaries (or TOC) to LLM, get the `json sections` from todo | cheap with small context | good *confirmation* layer; hallucination risk if used blind on raw pages |
+| Marker/docling built-in chunkers | structure-aware Markdown + sections | heavy deps | redundant here |
+
+**Recommendation:** two-phase hybrid: (a) script scans page texts for system-header patterns ->
+candidate boundaries; (b) LLM receives one-line-per-page digests and emits the todo's
+`{number_of_sections, sections[{page_from, page_to, desc}]}` JSON, constrained to agree with (a)
+where (a) is confident. Deterministic pass is the anchor; LLM writes the human-readable `desc` and
+fixes ambiguous pages. No layout model in v1; revisit DocLayNet/YOLO only if table detection needs
+region hints.
+
+## 4. Structured extraction (positions -> CSV/JSON)
+
+*(all rows [DOCS] — round 3 could not execute any: no inference server exists on this machine;
+see Round 3 §5. The pdfplumber-executed row-recovery in Round 3 §3 shows the deterministic layer
+that feeds these prompts already works.)*
+
+| Technique | What | Guarantee | Where |
+|---|---|---|---|
+| **JSON mode / json_schema** | server constrains output to a schema | syntactic (valid JSON, right fields) | llama.cpp `response_format` (r2: exact shape `{"type":"json_schema","schema":{...}}` — schema sits *directly* under `response_format`, unlike OpenAI's `json_schema:{name,schema}` nesting; also a plain `json_schema` request field on `/completion`), vLLM `guided_json`, OpenAI-compatible everywhere |
+| GBNF grammars | llama.cpp-native CFG constraints | strong incl. enums | llama.cpp only; schema->GBNF conversion step |
+| **xgrammar / outlines** | constrained decoding engines | 100 % structure, token-level | vLLM/SGLang backends; xgrammar is the fast modern one |
+| Function calling | tool-schema driven | same as json_schema + routing niceties | all OpenAI-compat servers |
+| Prompt-only JSON + repair | "reply in JSON" + tolerant parser + 1 retry | none (parse errors happen) | fallback path |
+
+**Recommendation:** define one strict per-section output schema (positions with
+`pos_no, description, quantity_raw, unit_raw, manufacturer_hint, model_hint, quote_source_text,
+page_no`), request it via `json_schema` from llama.cpp, and *still* keep a tolerant stdlib parser +
+one repair round-trip (schema errors happen at the value level: "5 Stk" in `quantity`). Unit
+normalization (`Stk/Stück/ps -> pc`, `m2/qm -> m2`, `m/lfm -> m`, `h/Std -> h`) is a deterministic
+post-pass, not an LLM job. CSV assembly (todo steps 3-4) stays a stdlib `csv` script.
+
+## 5. Entity matching (positions vs `catalog.csv`)
+
+The matching is **cross-lingual** (German tender text vs English catalog descriptions) and
+dimension-heavy (`DN100`, `400x300x1250`) - a pure string-similarity approach is not enough.
+
+| Tool | What | License | Fit |
+|---|---|---|---|
+| `difflib` (stdlib) | SequenceMatcher ratios | stdlib | zero-dep baseline; good enough for exact-ish duplicates |
+| **rapidfuzz** | C++ fuzz metrics (`token_set_ratio`, `WRatio`, `jaro_winkler`), `process.extract`/`cdist` (r2: all confirmed in README; cdist is the fast path) | MIT (3.14.6, 2026-08-30) | **[EXEC r3]** installed + run on the golden set: `token_set_ratio` ranks the correct product **#1 in 6/6** cases; **WRatio fails 3/6** (score ties at 86) -> use token_set_ratio only; zero deps, 12 MB |
+| **sentence-transformers + multilingual embeddings** (`intfloat/multilingual-e5-small` **MIT** or `paraphrase-multilingual-MiniLM-L12-v2` **Apache-2.0**, both licenses r2-confirmed; both 384-d) | 384-d vectors, cosine top-k; e5 requires `"query: "`/`"passage: "` input prefixes (r2-confirmed — easy to forget, silently degrades matching) | Apache/MIT models, but torch dep | **[DOCS]** optional tier; r3 quantified the need precisely: raw German vs English catalog tops out at **27-33** token_set — useless; but if extraction emits English descriptions (as the golden CSV does), embeddings are unnecessary for this catalog |
+| Cross-encoder reranker (ms-marco MiniLM) | joint scoring of (position, candidate) | Apache | **[DOCS]** unnecessary at catalog size 56 |
+| Attribute/dimension parse | regex DN/WxH -> numeric compare | stdlib | **[EXEC r3 — load-bearing]**: the tightest golden case (P-SIL-001 vs dimension-sibling P-SIL-004) separates by only **5.6 pts** of token_set (100 vs 94.4); a score-only threshold cannot cut there — the dimension veto decides |
+
+**Recommendation (r2, thresholds made empirical by r3):** hybrid score in a stdlib script:
+`score = 0.35*rapidfuzz(token_set) + 0.35*cosine(e5) + 0.2*attr_agree(DN/WxH, category) + 0.1*manufacturer_hint`;
+top-1 above threshold -> `suggested_product_id`; else `review_required`. Ship rapidfuzz as the only
+required dep; embeddings tier optional (flag in settings). Model hints like `TVJ-D` vs `VAV-500-300`
+match better with token/character metrics than embeddings - the two techniques complement.
+**r3-empirics: correct matches score 84-100 token_set, best wrong matches 50-94; use
+token_set >= 80 + dimension agreement = auto-accept, 60-80 or dimension mismatch = review,
+< 60 = no match; and drop WRatio entirely (3/6 failures from 86-ties). The English-description
+contract at extraction is what makes this work — see Round 3 §4.**
+
+## 6. Comparator / verification (todo step 3's `<comparator agent>`)
+
+| Pattern | What | Cost | Fit |
+|---|---|---|---|
+| **Quote-anchored check** | extractor must return `quote_source_text`; verifier confirms fuzzy presence in the section's page text and that qty/unit appear in it | 1 extra cheap call or even rapidfuzz-only | **[EXEC r3 — design corrected]** highest-value pattern, BUT the quote must be the **verbatim German source line**, not the translated English description: `partial_ratio(english_desc, german_page)` scores **35-43 — indistinguishable from a fake quote (33-39)**; `partial_ratio(german_verbatim, page)` = **100** on all 6 real quotes vs 33-37 on fakes. Schema must mandate `quote_source_text` = exact German substring |
+| **Self-consistency** | k samples at temperature, majority vote per field (esp. quantity) | k x tokens | +3-18 pts on reasoning tasks (Wang et al.); use only for low-confidence rows |
+| **NLI entailment** | `cross-encoder/nli-deberta-v3-base` (0.2 B, Apache-2.0): premise=page text, hypothesis=extracted row; entailment/neutral/contradiction | small model, torch dep | semantic overlap check; German-English mismatch hurts (model is English-centric) |
+| **Dual-model cross-check** | extractor LLM A, checker LLM B ("does position X exist on page Y? answer with the line") | 2 x tokens | catches A-specific hallucinations; different LoRA or higher temp for B |
+| Deterministic validators | quantity > 0, unit in {pc,m,m2,h,LS,system}, DN parse consistent with description | free | always on; gate before any LLM check |
+
+**Recommendation:** layer it: (1) deterministic validators; (2) quote-anchor verification with
+rapidfuzz (`partial_ratio` of quote against page text >= ~90) - no model needed; (3) LLM comparator
+agent (same local server, no LoRA or the base model) for rows failing or missing quotes; (4)
+self-consistency (k=3) only for `review_required` quantity conflicts. Skip NLI in v1 (torch dep +
+language mismatch); the quote-anchor method is cheaper and more explainable in the review UI.
+
+---
+
+## Recommended stack (v1)
+
+| Layer | Choice | Why | Evidence |
+|---|---|---|---|
+| Text+tables | **pdfplumber** (MIT, 0.11.10) + header-geometry/word-bucketing recipe | coordinate-aware tables — r3 proved the naive strategies fail and found the working recipe | **EXEC** |
+| Split sections | **pypdf** (BSD-3, 6.20.0; pikepdf 10.16.0 as fallback) | lossless page extraction for `tender_<n>.pdf`, zero native deps — matches sibling architecture | **EXEC** |
+| Sectioning | heuristic headers + LLM JSON confirm | deterministic anchor, cheap | EXEC (regex side) / DOCS (LLM side) |
+| Inference | **llama.cpp `llama-server`** (MIT, v0.6.0) + GLM-family GGUF (4.7-Flash 30B-A3B workstation / 4.6 355B server-class); dev box = hosted API until hardware exists | local (tender confidentiality), OpenAI-compatible, json_schema, runtime per-request `lora` field | **DOCS** (nothing installed here; see r3 §5) |
+| Structuring | json_schema + stdlib tolerant parser + unit-map post-pass | valid JSON guaranteed, value-level repair | **DOCS** |
+| Matching | **rapidfuzz token_set_ratio** + mandatory dimension/attribute veto (+ optional e5 embeddings) | permissive, tiny; token_set 6/6 top-1 on golden; WRatio dropped | **EXEC** |
+| Verification | validators + quote-anchor (verbatim-German quote) + LLM comparator (+ self-consistency k=3) | explainable, source-page traceable; quote anchor separates 100 vs <=37 | **EXEC** (rapidfuzz part) / DOCS (LLM part) |
+| Client code | stdlib `urllib`/`json`/`csv` | matches repo philosophy | EXEC (stdlib always available) |
+
+## How the input-processing LoRA plugs in
+
+`web_ui` Settings already persists, per task ("Input processing", "Productivity factors",
+"Win-ratio prediction"): the selected dated LoRA version, the base model, and models/loras/cache
+paths (`ui_settings.json`; only versions trained for the current base model are selectable).
+`_1_AI_InputProcessing` should:
+
+1. read `ui_settings.json` (path passed via env var, e.g. `AUTOTENDER_UI_SETTINGS`, mirroring the
+   existing `AUTOTENDER_CALC_OUT`/`AUTOTENDER_FACTORS` pattern) and resolve
+   `<loras_dir>/input_processing_<date>.gguf`;
+2. start (or connect to) **one** `llama-server --model <base>.gguf --lora <lora>.gguf
+   --lora-init-without-apply` — r2-verified upgrade over round 1: adapters load at scale 0 and are
+   selected **per request** via the `lora: [{"id": 0, "scale": 1.0}]` body field (or switched
+   globally via `POST /lora-adapters`). The comparator agent calls the same server with
+   `"lora": []` (plain base model) in the same process — no second server, no restart;
+3. use the OpenAI-compatible endpoint for sectioning-confirmation, per-section extraction agents
+   and the comparator; `none` LoRA = scale-0 request, exactly what the UI's `none` option means;
+4. when the user switches LoRA version in Settings, the module issues a `POST /lora-adapters`
+   (or changes the per-request field) — the round-1 "restart the server" step is no longer needed.
+   Perf caveat from the README: requests with different LoRA configurations are not batched
+   together, so group extraction calls (adapter on) separately from comparator calls (adapter off).
+
+Note the training-side contract: adapters must be exported/converted to GGUF for llama.cpp runtime
+loading (HF safetensors LoRAs need `convert_lora_to_gguf.py`). If training stays on torch/HF,
+vLLM with `--enable-lora` is the GPU alternative that consumes HF adapters directly.
+
+## Risks
+
+- **Privacy:** any hosted-API mode sends a client tender off-machine - must stay opt-in and labeled.
+- **AGPL trap:** PyMuPDF would force AGPL on the whole tool (r2: AGPL-3.0 re-confirmed via GitHub
+  license API); stick to pdfplumber/pypdf. Note marker's *weights* are OpenRAIL-M — commercial use
+  beyond the <$5M-startup exemption is paid; another reason it stays out.
+- **Table geometry variance (r3: RESOLVED into a recipe):** the naive knob set
+  (`vertical_strategy:"text"` etc.) was executed and **fails** on this PDF (mid-word splits,
+  collapsed columns, dropped qty). The working recipe is: default `lines` strategy on the ruled
+  header to read the true column x-edges once per document, then `extract_words` bucketed by
+  x-midpoint into those columns, rows grouped by `round(top/4)` — recovered 7/7 priced items on
+  p78 and all golden rows on p79/80 (Round 3 §3). Remaining per-page work: footer/header crop
+  bounds and multi-line block assembly.
+- **German/English gap (r3: quantified):** raw German item text vs English catalog = **27-33**
+  token_set (noise). The pipeline only works because extraction emits English normalized
+  descriptions (as the golden CSV does). If extraction ever stays German, the e5 embeddings tier
+  stops being optional.
+- **Block assembly + units (r3: new, discovered):** qty/unit attach to the **last** physical line
+  of an item block ("Druckverlust 30Pa | Stk | 4" closes the Schalldämpfer block), and body
+  dimensions are in **cm** ("B x H x L 40 x 30 x 125 cm") while golden+catalog use **mm**
+  (400x300x1250; the Typ string even encodes them directly: `MS-F/300x400x1250/1x230/P`). A
+  deterministic cm->mm + DN(WxH) normalization post-pass is required, and row assembly must walk
+  upward from qty lines to the item title.
+- **Hallucinated positions/quantities:** mitigated by quote-anchoring + comparator + validators;
+  residual risk lands in `review_required`, which the UI already supports.
+- **Long-context degradation** ("lost in the middle"): avoided by sectioning, but keep sections
+  under ~30-40 pages so per-section prompts stay far from the context ceiling.
+- **Dependency creep (r3: measured):** pdfplumber 0.11.10 alone brings **7 transitive packages**
+  (~36 MB installed; pdfminer.six -> cryptography -> cffi -> pycparser, plus pypdfium2 and a
+  Pillow 12.0.0->12.3.0 upgrade) — acceptable but no longer "tiny"; rapidfuzz is the clean one
+  (zero deps, 12 MB). Every torch-based option (docling, marker, sentence-transformers, NLI)
+  stays deferred to optional tiers to preserve the stdlib-first repo convention.
+- **SearxNG (r3: re-probed):** service answers HTTP 200 in ~3 s but brave + google cse are
+  "Suspended: too many requests" and duckduckgo times out — only the wikipedia engine returns.
+  Pace queries, prefer direct primary fetches (PyPI/GitHub/HF APIs).
+- **Dev-box inference gap (r3: new):** no llama-server/ollama/vllm installed, ports closed, and
+  the 4 GB GTX 1050 Ti / 14 GB RAM cannot host the recommended GGUFs — v1 development either
+  uses the opt-in hosted API or a 1-3 B smoke-test model; plan the hardware or accept the
+  confidentiality tradeoff explicitly.
+
+## References
+
+- pdfplumber (MIT, table strategies): https://github.com/jsvine/pdfplumber ; pikepdf (MPL-2.0): https://github.com/pikepdf/pikepdf ; pypdf: https://github.com/py-pdf/pypdf
+- PyMuPDF licensing (AGPL-3.0 confirmed via GitHub license API): https://pymupdf.org/
+- Camelot 2.0 changelog (playa-pdf backend, optional ml flavor/ghostscript): https://github.com/camelot-dev/camelot/releases
+- PDF parser comparison paper (r2 title-verified; round-1's companion repo 404s — dropped): https://arxiv.org/abs/2410.09871
+- docling (MIT): https://github.com/docling-project/docling ; DocLayNet: https://huggingface.co/datasets/docling-project/DocLayNet ; YOLO on DocLayNet: https://huggingface.co/hantian/yolo-doclaynet
+- marker (Apache-2.0 code, OpenRAIL-M weights — paid commercial use above $5M exemption): https://github.com/datalab-to/marker ; olmOCR: https://github.com/allenai/olmocr
+- llama.cpp server README (OpenAI-compat, json_schema, LoRA flags, /lora-adapters, per-request lora): https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md ; LoRA->GGUF converter: https://github.com/ggml-org/llama.cpp/blob/master/convert_lora_to_gguf.py
+- Ollama vs vLLM vs llama.cpp: https://www.matterai.so/guides/ollama-vs-vllm-vs-llamacpp-runtime-comparison ; https://developers.redhat.com/articles/2025/09/30/vllm-or-llamacpp-choosing-right-llm-inference-engine-your-use-case ; glm4 (9B, 5.5 GB, 128K): https://ollama.com/library/glm4
+- GLM GGUFs (r2-verified via HF API): unsloth/GLM-4.6-GGUF (355 B, 200 K, UD-TQ1_0 84 GB); unsloth/GLM-4.7-Flash-GGUF (30B-A3B, MIT, ~200 K, 8.3-18 GB); unsloth/GLM-4.7-Flash-REAP-23B-A3B-GGUF (pruned); unsloth/GLM-5.3-Flash-GGUF (320B-A18B, MIT, PR #27754+); zai-org/glm-edge-4b-chat-gguf (license "glm-4", NOT MIT); GLM-4.6 card: https://huggingface.co/unsloth/GLM-4.6-GGUF
+- Qwen3-32B (128K YaRN): https://huggingface.co/Qwen/Qwen3-32B
+- vLLM structured outputs (URL r2-verified 200): https://docs.vllm.ai/en/latest/features/structured_outputs/ ; XGrammar: https://arxiv.org/abs/2411.15100 + https://github.com/mlc-ai/xgrammar ; Outlines: https://dottxt-ai.github.io/outlines/latest/
+- RapidFuzz (MIT, 3.14.6): https://github.com/rapidfuzz/RapidFuzz
+- intfloat/multilingual-e5-small (MIT, 384-d, query:/passage: prefixes): https://huggingface.co/intfloat/multilingual-e5-small ; paraphrase-multilingual-MiniLM-L12-v2 (Apache-2.0): https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 ; nli-deberta-v3-base (Apache-2.0): https://huggingface.co/cross-encoder/nli-deberta-v3-base
+- Self-consistency (Wang et al., ICLR 2023): https://arxiv.org/abs/2203.11171
+
+---
+
+## Round 2 - verification & changes
+
+- **Date:** 2026-10-10 (same day, second pass)
+- **Method:** every round-1 claim re-checked against primary sources fetched with `curl`: PyPI
+  JSON API (version, `license_expression`, classifiers, `requires_dist`, upload dates), GitHub
+  repo API (`license.spdx_id`, `pushed_at`, releases), raw repo READMEs, HuggingFace model API +
+  model cards, arxiv `<title>` tags, doc-URL HTTP status. SearxNG was attempted first but all
+  engines were still throttled from round 1, so zero facts came from search snippets - everything
+  below is primary-source. Direct fetches are the better verification path; future agents should
+  use them first.
+
+### 1. Claims verified correct (with source)
+
+| Round-1 claim | Verified value | Source |
+|---|---|---|
+| pdfplumber is MIT | MIT (PyPI classifier + GitHub API) | pypi.org/pypi/pdfplumber/json; api.github.com/repos/jsvine/pdfplumber |
+| pikepdf is MPL-2.0 | MPL-2.0 (PyPI `license_expression` + GitHub) | pypi.org/pypi/pikepdf/json |
+| pypdf is BSD-3 | BSD-3-Clause (`license_expression`) | pypi.org/pypi/pypdf/json |
+| PyMuPDF is AGPL | AGPL-3.0 (GitHub license API) | api.github.com/repos/pymupdf/PyMuPDF -> license.spdx_id |
+| rapidfuzz is MIT, has token_set_ratio / WRatio / jaro_winkler / process.cdist | all present in README; "MIT licensed so it can be used with whichever license" | raw README rapidfuzz/RapidFuzz |
+| llama-server supports `response_format` json_schema | yes - and the exact shape is documented: `{"type":"json_object"}`, `{"type":"json_object","schema":{...}}` or `{"type":"json_schema","schema":{...}}`; plus a plain `json_schema` request field on `/completion` | tools/server/README.md lines ~573, ~1346 (fetched 2026-10-10) |
+| llama-server has `--lora` and `--lora-scaled` | yes; both accept comma-separated values for *multiple* adapters | tools/server/README.md options table |
+| `convert_lora_to_gguf.py` exists for HF->GGUF LoRA export | yes, 23 KB at repo root | api.github.com/repos/ggml-org/llama.cpp/contents/convert_lora_to_gguf.py |
+| Ollama `glm4:9b` = 5.5 GB, 128 K context | confirmed ("128K context", 9b, 5.5GB on the page) | ollama.com/library/glm4 |
+| GLM-4.6 context = 200 K | "The context window has been expanded from 128K to 200K tokens" | huggingface.co/unsloth/GLM-4.6-GGUF README |
+| multilingual-e5-small is MIT, 384-d | MIT confirmed (cardData.license) | huggingface.co/api/models/intfloat/multilingual-e5-small |
+| paraphrase-multilingual-MiniLM-L12-v2 is Apache-2.0 | confirmed | HF API, same method |
+| nli-deberta-v3-base is Apache-2.0 | confirmed | HF API |
+| pdfplumber table strategies exist for borderless tables | `vertical/horizontal_strategy` in {`lines`, `lines_strict`, `text`, `explicit`}; `text` strategy deduces imaginary lines from word left/right/center alignment; knobs `min_words_vertical` (default 3), `min_words_horizontal` (default 1), `snap/join/intersection` tolerances (default 3), `text_x/y_tolerance` also feeds the table-identification word grouping; `explicit_vertical_lines`; `Page.crop` before extraction recommended; `im.debug_tablefinder(table_settings)` visual debugger; "works best on machine-generated, rather than scanned, PDFs" | jsvine/pdfplumber README (table settings + strategies sections) |
+| pdfplumber is pdfminer.six-based and maintained | 0.11.10 (2026-06-15), repo pushed 2026-08-06, CI tests Py 3.10-3.14 | PyPI + GitHub API |
+| vLLM structured-outputs docs URL | HTTP 200 (follows redirects, still valid) | docs.vllm.ai/en/latest/features/structured_outputs/ |
+| arxiv 2410.09871 is a PDF-parser comparison | title: "A Comparative Study of PDF Parsing Tools Across Diverse Document Categories" | arxiv.org/abs/2410.09871 |
+| arxiv 2411.15100 is XGrammar | title: "XGrammar: Flexible and Efficient Structured Generation Engine for Large Language Models" | arxiv.org/abs/2411.15100 |
+| arxiv 2203.11171 is Self-Consistency (Wang et al.) | title: "Self-Consistency Improves Chain of Thought Reasoning in Language Models" | arxiv.org/abs/2203.11171 |
+| docling MIT / olmOCR Apache-2.0 | confirmed via GitHub license API; both very active | GitHub API |
+
+### 2. Corrections (old -> new)
+
+1. **camelot was wrong-footed.** Round 1: "mature but stale-ish; lattice needs Ghostscript, stream
+   needs OpenCV". Reality: **camelot 2.0.0 released 2026-06-04** (repo pushed 2026-10-06 - very
+   much alive). Per the 2.0.0/2.0.0rc1 release notes and PyPI `requires_dist`:
+   - backend migrated pypdf+pdfminer.six -> **playa-pdf** (with pypdfium2, opencv-python-headless
+     as base deps);
+   - **Ghostscript is now an optional extra** (`camelot-py[ghostscript]`); the new default
+     `engine="combined"` and render-free `engine="vector"` lattice need no Ghostscript at all;
+   - new **optional neural `flavor="ml"`** (Table Transformer, `camelot-py[ml]` = torch,
+     transformers, timm) explicitly targeting **borderless and scanned tables**, plus optional OCR
+     (`rapidocr-onnxruntime`) and `flavor="auto"` per-page routing.
+   Consequence for us: the *reason* to skip camelot changed from "unmaintained + heavy system
+   deps" to "redundant for v1, but a legitimate documented fallback for exactly our failure mode
+   (borderless tables) if pdfplumber's `text` strategy underperforms - as an optional tier,
+   because `ml` pulls torch".
+2. **GLM GGUF landscape materially updated.** Round 1 implied GLM-4.x GGUFs are a workstation
+   option; verified sizes (HF API + file trees): GLM-4.6 is 355 B (UD-TQ1_0 84 GB, Q4 ~200 GB),
+   GLM-4.7-Flash (30B-A3B, MIT, ctx 202752) 8.3-18 GB = the practical local GLM, pruned REAP
+   -25 %, GLM-5.3-Flash (320B-A18B) needs PR #27754+, zai-org edge-4b is license "glm-4" not
+   MIT -> deprioritized. (Full detail in the section-2 reality check above.)
+3. **llama-server LoRA story upgraded from "restart on switch" to runtime switching.** New in
+   current llama.cpp (verified in the server README):
+   - `--lora-init-without-apply` loads adapters at scale 0;
+   - `GET/POST /lora-adapters` lists/set global adapter scales;
+   - **per-request `lora: [{"id": 0, "scale": 1.0}, ...]` field** on completions - "If a LoRA
+     adapter is not specified in the list, its scale will default to 0.0";
+   - caveat documented: "requests with different LoRA configurations will not be batched
+     together, which may result in performance degradation".
+   Round 1's "restart the server with the new adapter" step in the plug-in section is therefore
+   obsolete: one server, base model + all task adapters loaded, extractor requests enable the
+   input-processing adapter, comparator requests send `"lora": []`. This maps 1:1 onto the
+   web_ui per-task LoRA settings *without* server churn. (Note: round-1's core claim "native
+   runtime LoRA loading" was directionally right but understated.)
+4. **`response_format` shape nuance added.** llama.cpp nests the schema *directly*:
+   `{"type":"json_schema","schema":{...}}`, whereas the OpenAI spec puts it under
+   `json_schema:{name, strict, schema}`. The stdlib `urllib` client should send the llama.cpp
+   shape when talking to `llama-server` (and it also accepts plain `{"type":"json_object"}`).
+5. **marker weights license made precise.** Round 1: "Apache (weights restricted)". Verified:
+   code Apache-2.0; **weights are "modified AI Pubs Open Rail-M"** - free for research, personal
+   use, and startups under $5 M funding/revenue; paid license beyond (datalab.to/pricing).
+   Relevant because Equans is not a <$5 M startup - marker is a *commercial* no-go, not just
+   "heavy".
+6. **Dead reference dropped.** Round-1 cited
+   `github.com/applied-artificial-intelligence/pdf-parser-benchmark` alongside arxiv 2410.09871.
+   The GitHub API returns 404 for that repo, and the paper's HTML mentions only the *subject*
+   libraries (camelot, tabula-py, pdfplumber), no benchmark repo. Kept the arxiv paper, dropped
+   the repo URL.
+7. **Version column refreshed everywhere** (was absent/stale in round 1): pdfplumber 0.11.10,
+   pikepdf 10.16.0 (now requires Python >=3.11 - repo's 3.13 is fine), pypdf 6.20.0, rapidfuzz
+   3.14.6, camelot-py 2.0.0, PyMuPDF 1.28.2, llama.cpp **v0.6.0 (2026-10-05)**. All from PyPI
+   upload dates / GitHub releases, fetched 2026-10-10.
+8. **e5 usage detail added** (not in round 1): multilingual-e5 requires every input to start with
+   `"query: "` or `"passage: "` - confirmed in the model card code example. Omitting it silently
+   degrades matching; the optional embeddings tier must bake this in.
+
+### 3. Conflicts with sibling report (context_agent_1) - resolved
+
+1. **pypdf vs pikepdf for todo-2 splitting.** Sibling: pypdf ("pure-Python, BSD, one small dep
+   like pyyaml"); round 1: pikepdf ("exact page fidelity, repair"). **Resolution: pypdf for v1.**
+   Decisive verified facts: pypdf 6.20.0 is BSD-3, pure Python, extremely active (released
+   2026-10-09); pikepdf 10.16.0 is MPL-2.0 **and** wraps the qpdf C++ library (binary wheel +
+   Python >=3.11 floor) - against this repo's stdlib-first rule, a native dependency needs a
+   reason, and "lossless page copy" is not one for a well-formed born-digital DynaPDF file.
+   pikepdf is retained in the table as the documented escalation path (PDF repair, edge-case
+   fidelity) so the trade-off stays visible. The sibling's `step2_split.py` design stands.
+2. **Text-extraction path: poppler CLI vs pdfplumber.** Sibling builds `pages.jsonl` with
+   `pdftotext -layout` (already installed system-wide, zero Python deps) and relegates pdfplumber
+   to "only if coordinate-level table extraction is ever needed"; round 1 led with pdfplumber for
+   text+tables. **Resolution: sibling's layering adopted** - poppler CLI for the default page-text
+   map (also keeps `-layout` column alignment the sectioning regex wants), pdfplumber as the
+   table-geometry tier (its README itself says "works best on machine-generated PDFs", and the
+   text-strategy knobs verified above are exactly for our borderless LV tables). Round-1's
+   stack-table and section-1 recommendation were edited accordingly.
+3. **LoRA wiring.** Sibling suggested vLLM-style "pass the LoRA as the model name /
+   `extra_body.lora` (backend-dependent)"; round 1 said restart llama-server per adapter.
+   **Resolution (supersedes both): use llama.cpp's verified native mechanism** - load adapters
+   with `--lora-init-without-apply`, select per request via the `lora:[{id,scale}]` field. No
+   server restart, no model-name indirection, and it degrades cleanly to `"lora": []` for the
+   comparator/base path. vLLM `--enable-lora` remains the GPU-alternative note.
+4. **AGPL warning aligned.** Both reports flag PyMuPDF; sibling adds the sound point that the
+   poppler CLI is "GPL-but-cli" (GPL does not propagate across a subprocess boundary for
+   separate programs) - consistent with using `pdftotext` while shipping a proprietary-friendly
+   Python stack. No change needed beyond cross-referencing.
+
+### 4. Still open / unverified after round 2
+
+- **GLM-4.7-Flash / glm4:9b German quality** on Swiss-HVAC Leistungsverzeichnis terminology: no
+  public benchmark found (and none testable while SearxNG engines are down). The sectioning and
+  extraction prompts must be validated empirically against the golden
+  `example_lv_positions.csv` rows (pages 70-180) - that is the module's `validate.py` gate.
+- **pdfplumber `text` strategy on this exact PDF**: knob names and semantics verified, but whether
+  `min_words_vertical=3` + default tolerances recover the LV columns on pages 78/106/163-171 is
+  untested. Budget the `debug_tablefinder` session; if column x-positions are stable across the
+  document, `explicit_vertical_lines` is likely the winning setting (deterministic, no tuning).
+- **vLLM `--enable-lora` consuming HF adapters directly** (round-1 claim) was *not* re-verified
+  this round (vLLM docs fetched only for structured outputs). Low risk - well-known feature -
+  but marked here because the mission was to verify everything; re-check before relying on it.
+- **llama.cpp supported-context behavior for GLM-4.7-Flash GGUFs**: `config.json`
+  `max_position_embeddings=202752` is the model's trained window; actual usable KV-cache context
+  depends on `--ctx-size` and RAM/VRAM. Plan per-section prompts for <=32 K tokens regardless.
+- **GLM-4.6 hosted API current status**: docs.z.ai pages are a JS SPA (raw HTML unusable for
+  fact extraction); the 200 K context figure was instead confirmed via the unsloth GLM-4.6 model
+  card. Pricing/terms not re-checked.
+- **SearxNG**: brave/duckduckgo/google-cse all throttled across both rounds. If agents keep
+  researching concurrently, add engines (startpage, qwant, searx-caching) or enforce the 3-5 s
+  pacing globally; direct primary fetches (PyPI/GitHub/HF APIs) should be the default research
+  primitive either way.
+
+### 5. Net effect on the recommended stack
+
+Unchanged core (all now license- and version-verified): pdfplumber + rapidfuzz + llama-server +
+stdlib client, GLM-family base, json_schema-constrained extraction, quote-anchor verification.
+Changed: pypdf replaces pikepdf for splitting (sibling conflict resolved); LoRA wiring switches
+to `--lora-init-without-apply` + per-request `lora` (no restarts); camelot 2.0 `flavor="ml"`
+documented as the borderless-table fallback tier; marker flagged as commercial-restricted
+(OpenRAIL-M weights); GLM-4.6 GGUF demoted to server-class hardware and GLM-4.7-Flash promoted as
+the practical local base. New required facts for implementers: llama.cpp `response_format` shape,
+e5 `query:`/`passage:` prefixes, camelot 2.0 extras layout.
+
+---
+
+## Round 3 - execution validation
+
+- **Date:** 2026-10-10. **Method:** install the recommended tools and run them against the real
+  materials on this machine (Python 3.13.2, pip 24.3.1). Artifacts in `/tmp/r3/`.
+  The `[EXEC]`/`[DOCS]` markers above trace to this section.
+
+### 1. Install reality (executed)
+
+- `pip install --user pypdf pdfplumber` -> **8 packages touched**: pdfplumber 0.11.10 (452 KB),
+  pdfminer.six 20260107 (9.4 MB), pypdfium2 5.14.0 (480 KB + native lib), Pillow 12.3.0 (7 MB,
+  **upgrades existing 12.0.0**), cryptography 50.0.2 (16 MB), cffi 2.1.1, pycparser 3.11,
+  charset-normalizer 3.5.2. pypdf 6.20.0 (4 MB) was already present. ~17 MB wheels / ~36 MB
+  installed. **Correction to r2:** "pdfplumber brings pdfminer-six" understates — pdfminer.six
+  now hard-depends on cryptography(->cffi->pycparser) and pdfplumber also pulls pypdfium2+Pillow.
+  7 transitive deps; still binary-wheel-only (no system libs), but not "tiny".
+- `pip install --user rapidfuzz` -> 3.14.6, **zero dependencies**, 12 MB (compiled C++).
+
+### 2. pypdf split of pages 78-106 (executed — verdict: perfect)
+
+```python
+from pypdf import PdfReader, PdfWriter
+r = PdfReader("materials/BKP_244_LV_Lueftung_260804.pdf")     # 202 pages
+w = PdfWriter()
+for i in range(77, 106):                                     # doc pages 78-106
+    w.add_page(r.pages[i])
+with open("/tmp/r3/tender_78_106.pdf", "wb") as f: w.write(f)
+```
+Output: **29 pages in 0.09 s**, 0.43 MB out of 3.01 MB. Text integrity verified by md5 of
+`extract_text()` source-vs-split on first/mid/last page — **identical** (p78: 1287 chars, md5
+`6151a237ad` both sides). pypdf is execution-confirmed for todo-2; pikepdf unneeded.
+
+### 3. pdfplumber page 78 (executed — verdict: naive strategies fail, hybrid recipe wins)
+
+Page geometry: 595x842 pt; 1220 chars, 178 words, **1 line, 22 rects, 0 curves** (borderless
+body under a ruled header). Four settings, actual results:
+
+| Setting | Actual result |
+|---|---|
+| default (`lines`) | 1 table 2x6: header row perfect (`Pos./Gegenstand/Mass-Gattg./Mass-betrag/Einheits-Preis/Betrag Fr.`); whole body collapses into one row (`Stk|Stk|...`, `1|1|1|1|1|5|6`) — no body rules |
+| `text`/`text` min_words_vertical=3 | 52x6: right row boundaries, wrong columns — mid-word splits (`Schmi|dlin`, `Lamelle|nhut`, `S|tk 1`) |
+| `text`/`text` min_words_vertical=8 | 52x2: collapses, loses qty column |
+| `explicit` v-lines from header + `text` h-strategy, crop(0,80,595,780) | 50x2 and **drops the qty numbers** |
+
+Winning recipe (executed): default strategy as **geometry oracle**, then manual bucketing:
+
+```python
+xs = sorted({round(c[0], 1) for c in page.find_tables()[0].cells}) + [562.0]
+# -> [56.8, 76.6, 371.3, 399.0, 440.3, 488.3, 562.0]  (Pos|Gegenstand|Gattg|betrag|Preis|Fr.)
+words = [w for w in page.extract_words() if 80 < w["top"] < 780]   # crop header/footer
+# bucket word -> column by x-midpoint; row = round(top/4); 'Stk' lands col idx 2, number idx 3
+```
+
+Recovered all **7 priced items** on p78 verbatim, e.g. `Grösse Ø 10 cm|Stk|5`, `Ø 12.5 cm|Stk|6`.
+**Golden check:** `example_lv_positions.csv` puts LV0001 (Ø10/Stk 5) + LV0002 (Ø12.5/Stk 6) on p78
+— exact match. (Mission brief said LV0001-6 on p78; actually LV0003-6 are on p79/80.) p79:
+`Grösse Ø 10 cm|Stk|5` (LV0003, qty 5 OK) and two `(B x H) 10 Ø cm|Stk|4` rows (LV0004 qty 4;
+note x-ordering quirk — words re-sort to `(B x H) 10 Ø cm`, keep use_text_flow in mind). p80:
+`Drosselklappen ... Ø 12.5 cm|Stk|6` (LV0005) and Schalldämpfer block closed by
+`Druckverlust 30Pa|Stk|4` (LV0006; body says `B x H x L 40 x 30 x 125 cm`, Typ string
+`MS-F/300x400x1250/1x230/P` — cm vs mm normalization is mandatory).
+
+### 4. rapidfuzz matching (executed — verdict: design validated, 2 corrections)
+
+`process.extract(golden_desc, {product_id: catalog_desc}, scorer=..., limit=3)`; catalog =
+**56 products** (r2 said 57 — miscounted incl. header). Actual scores:
+
+| LV | want | token_set top-3 | rank | WRatio rank | correct | best-wrong | gap |
+|---|---|---|---|---|---|---|---|
+| LV0001 | P-AIR-001 | 84 / 62 / 56 | **#1** | #1 (86 tie) | 84.2 | 62.5 (P-AIR-002) | 21.7 |
+| LV0002 | P-AIR-002 | 84 / 62 / 48 | **#1** | #2 (86 tie) | 84.2 | 62.5 (P-AIR-001) | 21.7 |
+| LV0003 | P-AIR-003 | 85 / 58 / 45 | **#1** | #3 (86 tie) | 85.0 | 58.1 (P-AIR-001) | 26.9 |
+| LV0004 | P-FIR-001 | 100 / 50 / 49 | **#1** | #1 | 100.0 | 50.0 (P-VAV-001) | 50.0 |
+| LV0005 | P-DAM-001 | 86 / 61 / 53 | **#1** | not in top-3 | 86.3 | 61.1 (P-DCT-R-125) | 25.2 |
+| LV0006 | P-SIL-001 | 100 / 94 / 92 | **#1** | #1 | 100.0 | **94.4 (P-SIL-004!)** | **5.6** |
+
+- **token_set_ratio: correct product #1 in 6/6.** WRatio: 3/6 (saturates into 86-ties) -> dropped.
+- **Gray zone is real and narrow:** correct 84-100 vs best-wrong 50-94.4; the 84-94 overlap is
+  exactly dimension-sibling territory (400x300x1250 vs 540x400x1250; DN100 vs DN125). Empirical
+  policy: `token_set>=80 AND dimension-agree -> accept; 60-80 or dim-mismatch -> review; <60 ->
+  no-match`. Attribute veto is load-bearing, not cosmetic.
+- **German reality check:** raw German item text vs English catalog tops out at **27-33** (noise).
+  Matching only works on English normalized descriptions — the extraction stage's translation is
+  part of the matching contract, not a nicety. (Quote-anchor side-finding: English desc vs German
+  page = 35-43, same as fakes; **verbatim German** quote vs page = 100 on all 6 real rows, 33-37
+  on fakes -> `quote_source_text` must be the exact German substring.)
+
+### 5. Inference layer (executed probe — verdict: nothing exists locally)
+
+`which llama-server ollama vllm` -> **empty**; ports 11434/8080/8000/1234 **closed**; no docker;
+no `~/.ollama` or model dirs; GPU = **GTX 1050 Ti Max-Q 4 GB**, RAM 14 GB (5 free).
+GLM-4.7-Flash needs 8.3-18 GB -> does not fit; glm4:9b (5.5 GB) would swap. **No structured-output
+call could be run — the llama.cpp/Ollama plan stays docs-verified.** Consequence adopted above:
+dev v1 uses the opt-in hosted API (or a 1-3 B CPU smoke model) behind a configurable
+`AUTOTENDER_LLM_BASE_URL`; llama-server + GGUF remains the production target.
+
+### 6. SearxNG (executed)
+
+`curl "http://127.0.0.1:8888/search?q=test&format=json"` -> HTTP 200 in 3.0 s but **1 result
+(wikipedia only)**; `unresponsive_engines`: brave + google cse "Suspended: too many requests",
+duckduckgo "timeout". Paced 5 s second query -> 0 results, same suspensions. Service alive,
+general search unusable; direct primary fetches remain the research primitive.
+
+### 7. Recommendation changes forced by execution
+
+1. pdfplumber usage rewritten: header-geometry + word-bucketing (r2's pure `text`-strategy knob
+   set demonstrably fails). camelot fallback tier demoted to "probably never needed".
+2. WRatio dropped from the matching design; token_set_ratio + dimension veto + 60/80 thresholds
+   made empirical. Embeddings tier conditional on extraction staying German.
+3. `quote_source_text` schema field redefined as verbatim German source substring.
+4. New deterministic post-pass required: cm->mm dimension normalization + qty-line block assembly.
+5. Inference: dev box cannot run recommended models -> configurable base URL + hosted-API dev
+   path; production llama-server plan unchanged (docs-verified).
+6. Corrections: catalog = 56 products (not 57); pdfplumber dep footprint = 7 packages/~36 MB.

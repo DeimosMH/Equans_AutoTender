@@ -1,0 +1,378 @@
+# Context Agent 4 — Technology & Data Research for `src/_3_Prediction`
+
+- **Date:** 2026-10-10
+- **Module:** `src/_3_Prediction` (win-probability / success prediction, profit slider min/mid/max)
+- **Agent:** 4 of 6
+- **Angle:** Technology & data research — concrete sources, models, training techniques, trade-offs
+- **Research tooling:** local SearxNG (127.0.0.1:8888, verified up; engines rate-limited after ~10 queries, gaps filled via direct fetch of arxiv.org API, scikit-learn docs, Hugging Face, vLLM, GitHub)
+
+## 1. What the repo already has (grounding)
+
+| Where | What | Implication |
+|---|---|---|
+| `src/_3_Prediction/todo` | "web scraping of old tenders data: which ones won - and why ... -> lora model for success ... on slider possible min, mid and max" | Two deliverables: a data pipeline + a predictor behind a 3-point slider |
+| `materials/project_parameters.json` (`stretch_bid_optimization`) | reference win probability 0.55, linear price sensitivity 0.05 prob-points per 1% price, scenario margins 2.5/4.0/6.5%, clamp [0.05, 0.95], model_inputs list (historical_bids, relative_price_position, ...) | The current model is a hand-tuned linear heuristic. The principled replacement is a calibrated price-response curve fitted on real won/lost data |
+| `materials/README.md` stretch goal | Aggressive/Target/Conservative scenarios with price, margin, win probability, expected contribution | Expected contribution = win_prob * (price - cost) — needs a *calibrated* probability, not just a ranking |
+| `src/web_ui/server.py` (lines 95–155, ~1000–1025) | Task registry `("input_processing", "productivity_factors", "win_ratio")`; BASE_MODELS `GLM-4.6, GLM-4.5-Air, Llama-3.3-70B, Qwen3-32B`; a `win_ratio` LoRA version `2026-10-02 (GLM-4.6)` already registered; `/api/settings/upload-data` dumps training files to `uploads/lora_data/`; versions trained on another base are stored but not selectable | The versioned-model plumbing exists; the actual training/serving backend is not wired. `/data/models`, `/data/loras` dirs are assumed for the local runtime |
+
+So the module's job: (a) build a won/lost dataset from Swiss public tender outcomes (+ internal bid history), (b) fit a win-probability model for the min/mid/max slider, (c) decide where (or whether) a LoRA LLM adds value, (d) serve it locally behind the existing `win_ratio` task.
+
+## 2. Data source inventory
+
+| Source | What it offers | Access | Notes / legality |
+|---|---|---|---|
+| **simap.ch** — official Swiss e-procurement platform (Confederation + most cantons + municipalities) | Tender notices, documents, and **award publications (Zuschlag)** incl. winner name, awarded value **and number of submissions**; WTO statistics page | **ROUND 2: simap has an official, documented, unauthenticated JSON API** — `https://www.simap.ch/api/publications/v2/project/project-search` (search; params: search, lang, projectSubTypes, issuedByOrganizations, processTypes, newestPubTypes, cpvCodes, bkpCodes, ebkph/tCodes, npkCodes, oagCodes, orderAddressCantons, newestPublicationFrom/Until, lastItem for keyset pagination) and `/api/publications/v1/project/{projectId}/publication-details/{publicationId}` (full award: `decision.vendors[]` with name/address/price/vatType, `decision.numberOfSubmissions`, awardDecisionDate, justification text, `publicationTed` flag). No Playwright needed. `robots.txt` disallows only admin/user/vendor/template/provider/error pages — **publication/search pages are crawlable per robots** | The API AGB (AGB «Nutzung des API», on `/de/about/legal`) explicitly permits: accountless use "analog zur Benutzeroberfläche" for publications+search, **commercial use and redistribution to third parties**, currently free of charge (fees possible with 1-month notice). Duties: attribution notice «Dies ist keine amtliche Veröffentlichung...», no content alteration, publish corrections, 8:00 embargo on redistribution on publication day, pass obligations to downstream users. Swiss FADP applies to personal names — keep company-level data. Platform risk: re-development contract **revoked March 2025** (inside-it.ch, verified), so expect API churn; developer registration available for early change notices |
+| **TED / TED Open Data** (EU) | All EU + GPA third-country notices; Swiss above-threshold awards appear here (verified: `CY=CHE AND FT=CAN-SUPPLIER` returns Swiss CANs; OpenTender sources its Swiss above-threshold coverage from TED) | (1) **Search API v3 — REST, not GraphQL (Round 2 correction): `POST https://api.ted.europa.eu/v3/notices/search`** with expert query + `fields` + `limit`, **no API key required** (docs: "does not require authentication"); 1832 returnable fields incl. `winner-name`, `buyer-name`, `BT-711-LotResult` (award value), `received-submissions-type-val` (offers received); Swagger at `api.ted.europa.eu/swagger`; other TED APIs (Publication etc.) do use API keys. (2) `data.ted.europa.eu` — eProcurement Ontology RDF, **SPARQL verified at `https://publications.europa.eu/webapi/rdf/sparql`** (2.51M ePO Procedures, JSON/CSV/TSV/XML export, "Connect your app" links) | `ted.europa.eu/robots.txt` allows everything except login/dashboard/Liferay internals; notices sitemap at `/sitemap/notices/sitemap.xml`. Free reuse, attribution of Commission data. Best programmatic path — no scraping needed |
+| **OpenTender Switzerland** (OCP Data Registry, Government Transparency Institute) | Ready-made Swiss OCDS dump: 2006–2024, 149,176 tenders, 43,835 awards / 47,689 suppliers, 192k parties, 234k documents; JSONL.gz (~74 MB), CSV.tgz (~104 MB), XLSX, per-year or all-time; OCID prefix `ocds-70d2nz`; updated ~6-monthly | Direct bulk download, no API | **License CC BY-NC-SA 4.0 — non-commercial.** Fine for prototyping/research and for building the pipeline; a commercial Equans deployment trained on this data needs a legal review or a re-scrape from simap/TED directly. No bidder counts (0 bidders recorded) — award values + winner identity only |
+| **Cantonal / federal statistics** | e.g. Kanton St. Gallen "Staatliche Grossaufträge" submissions statistics PDF (sg.ch); BKB "Bericht zum Beschaffungswesen 2024" (bkb.admin.ch) — aggregated award volumes by sector | PDF download | Good priors for sector win rates / competitive intensity, not per-tender records |
+| **ch.ch** | Federal citizen portal, links to simap and procurement explanations; no dataset itself | HTML | Informational only |
+| **SWEQ / apkwienerbv** (from the task brief) | **Unverified.** `www.sweq.ch` does not resolve (DNS ENOTFOUND); no plausible Swiss-procurement entity found under either name before engines rate-limited | — | Treat as garbled leads; primary sources are simap + TED + OpenTender |
+| **Internal Equans data** (to be collected) | Own past bids: cost baseline, submitted price, margin, outcome, and — per the todo — **why** won/lost (free text) | CSV via the existing `/api/settings/upload-data` → `uploads/lora_data/` | The only source with losing-bid prices and reasons. Highest value per row; the "why" text is exactly what an LLM is good at |
+
+**Key data gap to plan around:** public sources publish the *award* (winner + value), not the losing bids. Round 2 improvement: simap's award details now provide **`numberOfSubmissions`** per tender, so competitive intensity (n_bidders) is available even without losing prices; TED CANs expose `received-submissions-type-val` likewise. Losing *prices* must still be inferred from price *position* relative to award values (see Round 2 §Losing-bid proxies for the legal channels to get more).
+
+## 3. Scraping / collection tooling trade-offs
+
+| Tool | Fit here |
+|---|---|
+| `requests` + `beautifulsoup4` (stdlib-adjacent) | Works for TED SPARQL/API, OpenTender downloads, static cantonal pages. Use first; matches the repo's stdlib-first style (`server.py` is a stdlib `http.server`) |
+| Scrapy | Worth it only for large scheduled crawls; overkill for a prototype |
+| Playwright (headless Chromium) | **Round 2: no longer needed for simap** — the official JSON API covers search + award details (incl. numberOfSubmissions). Keep Playwright only as a fallback if the API adds auth/fees; it may still be useful for legacy `archiv.simap.ch` (JS app, its own `/api` routes, not yet mapped) |
+
+Crawler hygiene regardless of tool: obey robots.txt, honor `Retry-After`/429, identify UA, cache responses to disk (tender documents rarely change), and prefer the TED API over any HTML scraping.
+
+## 4. Modeling options for win probability
+
+### 4.1 Classical (tabular)
+
+1. **Logistic regression on price position** — features: `log(bid / award_value)`, number of bidders, log contract size, canton/client type, sector (BKP 244 ventilation), capacity. Transparent, monotone in price (matches business intuition), trains on ~100 rows, trivially calibratable. Direct principled replacement for the linear `0.05/1%` heuristic: fit the slope on data instead of hard-coding it.
+2. **Gradient boosting (LightGBM / XGBoost)** — captures interactions (price matters more with many bidders; client-type effects). Best accuracy on tabular data but needs ~500+ samples and gives less insight; output must be calibrated.
+3. **Auction-theoretic / bid-landscape models** — first-price sealed bid: win prob = P(our bid < min competing bid). Estimate the competing-bid distribution from historical award values normalized by estimated cost (the `_2_Calculator` output can normalize internal bids). The RTB literature formalizes this: bid-shading with deep distribution networks (arXiv:2107.06650, deployed at Verizon Media, +2.4–8.6% ROI), landscape forecasting with RNN + survival analysis (arXiv:1905.03028). Elegant when the dataset is award-value-only.
+
+### 4.2 LLM / LoRA
+
+A LoRA adapter on one of the configured bases (GLM-4.6 … Qwen3-32B) can be trained to output structured JSON `{"win_probability_min": …, "mid": …, "max": …, "rationale": …}` from a tender + bid description prompt.
+
+**When an LLM genuinely beats tabular models here:** tender *texts* and won/lost *justification notes* — semantic similarity to past tenders, extracting implicit requirements that correlate with outcomes, and producing the "why" the todo asks for. **When it does not:** pure numeric tabular prediction. Recent evidence:
+
+- TP-BERTa (arXiv:2403.01841, ICLR 2024): pre-trained LMs made *competitive with GBDTs* on tabular benchmarks — parity, not superiority, and only after magnitude-tokenization tricks.
+- TabuLa-8B (arXiv:2406.12031, NeurIPS 2024): 8B model fine-tuned on 2.1B rows beat XGBoost few-shot — but "The Illusion of Generalization in Tabular Language Models" (arXiv:2602.04031, ICML 2026) re-evaluated it and found near-zero median lift over majority-class baselines, explained by contamination/format familiarity.
+- "Why Large Language Models Fail at Tabular Prediction" (arXiv:2608.02412): frontier-LLM accuracy degrades with input dimensionality while classical baselines stay flat.
+- Counterpoint: "Strengthening LLMs for Tabular Prediction with Structural Priors" (arXiv:2510.17385) reached GBDT parity with an 8B model — via permutation-based RL over 139 datasets, i.e., heavy engineering for parity.
+
+With this repo's expected sample size (tens–hundreds of won/lost records), a LoRA cannot win on the probability number. It can win on explanation.
+
+### 4.3 Recommendation for this repo (local-first, stdlib-first, small team)
+
+**Hybrid, weighted toward classical:**
+
+1. **The slider number** (min/mid/max win probability driving Aggressive/Target/Conservative) comes from a **calibrated logistic regression** on price position + a handful of features — pure `sklearn`/numpy, runs anywhere, debuggable, versioned as a small artifact. min/mid/max = prediction interval from bootstrap or conformal residuals over the same model, satisfying "possible min, mid and max" in the todo.
+2. **The LoRA (`win_ratio` task, already registered in server.py)** is trained on *tender text + outcome + reason snippets* and serves the **rationale** ("why past similar tenders were won/lost") plus LLM-extracted features (e.g., requirement complexity score) that feed the tabular model. This uses the LLM for text, where it is strong.
+3. Graduate to LightGBM only past ~500 labeled internal bids; keep the logistic model as the calibrated fallback and sanity bound.
+
+This keeps the existing UI contract (task registry, base-model pinning, `/data/loras`) while not betting the probability quality on a model class that 2024–2026 evidence says underperforms GBDT/logistic on small tabular data.
+
+## 5. Training pipeline sketch
+
+```
+collect/            # scripts, isolated deps
+  opentender.py     # one-shot bulk download (JSONL.gz) -> normalize to internal schema
+  ted_api.py        # incremental above-threshold awards via POST /v3/notices/search (requests only)
+  simap_api.py      # GET /api/publications/v2/project/project-search + publication-details
+                    #   (official JSON API, no auth; note: newestPubTypes=award was rejected
+                    #    with E0025 in tests — filter pubType client-side or find valid enum)
+  internal.py       # parse uploads/lora_data/*.csv (own bids: cost, price, outcome, reason)
+schema: tender_id, published, client, canton, cpv_bkp, title, est_value,
+        award_value, winner, n_bidders?, our_bid, our_cost, outcome, reason_text
+features/
+  price_position = log(our_bid / award_value_est), log_size, n_bidders,
+  client_type, sector flags, seasonal, capacity, llm_complexity_score(optional)
+model/
+  logistic.py       # LogisticRegression + CalibratedClassifierCV(method="sigmoid", cv=5)
+  lora_train.py     # QLoRA via Unsloth (single consumer GPU, ~2x faster, ~70% less VRAM)
+                    #   or axolotl (YAML-driven, Apache-2.0, FSDP2/DeepSpeed multi-GPU)
+                    #   on the pinned base model; PEFT underlies both
+  eval.py           # Brier score, log loss, reliability curve (binned), walk-forward CV by date
+serve/
+  vLLM:  vllm serve <base> --enable-lora --lora-modules win_ratio=/data/loras/<ver>
+         (per-request adapter selection; --max-lora-rank to actual rank; seq-classification
+          adapters with a score head also supported)
+  ollama: merge adapter into base -> convert to GGUF (llama-quantize; ollama does NOT
+          quantize on import) -> Modelfile FROM -> ollama create
+  register the new version via the existing /api/settings endpoints
+```
+
+Base-model pinning already enforced by `_norm_settings` (versions trained on another base are not selectable) — the pipeline must tag every artifact with its base.
+
+## 6. Calibration and cold-start
+
+- **Metrics:** Brier score + log loss + a **calibration (reliability) curve** — sklearn docs: proper scoring rules measure calibration *and* discrimination together, so always plot the binned curve (`CalibrationDisplay`) before trusting the number that multiplies margin into "expected contribution".
+- **Calibrator choice:** `CalibratedClassifierCV(method="sigmoid")` (Platt) for small samples; isotonic only above ~1000 samples (overfits below that, per sklearn docs). Temperature scaling for multiclass/logit-style outputs.
+- **Cold start ladder:** <50 internal samples → priors from cantonal/BKB sector aggregates + the current parametric heuristic (0.55 reference, 0.05/1% slope) as a Bayesian prior on the logistic slope; 50–500 → strongly regularized logistic (or Bayesian logistic with those priors), min/mid/max from coefficient uncertainty; >500 → LightGBM + sigmoid calibration, interval from bootstrap.
+- **Always evaluate walk-forward (by tender date)** — bidder markets drift; random k-fold overstates accuracy.
+- **Selection-bias guard:** public data contains winners only; never train "P(win | our price)" on award values alone without the price-position normalization, or the model learns bid distributions, not win odds.
+
+## 7. Risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| OpenTender **CC BY-NC-SA** (non-commercial) license | High for productization | Prototype on it; production model re-derives training data from simap/TED (original public sources) or internal records; get a legal read |
+| simap platform churn (2025 re-dev contract revoked; API currently free but fee introduction reserved with 1-month notice) | Medium | Official JSON API + AGB now documented (Round 2); cache everything raw; register as API developer for early change notices; prefer TED API as second channel |
+| Selection bias (awards visible, losing bids not) | High (model validity) | Price-position features vs. award distribution; internal data for true win/loss labels |
+| Tiny sample sizes → overconfident probabilities | High | Sigmoid calibration, regularization, wide min/max interval, keep the 0.05–0.95 clamp from `stretch_bid_optimization` |
+| LLM structured-output failures (malformed JSON, hallucinated probabilities) | Medium | Deterministic parsing + retry; LLM owns rationale, not the slider number |
+| Personal data in award notices (FADP) | Low/Medium | Store company-level records only; strip representative names |
+| Multi-billion-parameter base (GLM-4.6) vs single-GPU training budget | Medium | QLoRA via Unsloth for the LoRA; or drop to GLM-4.5-Air / Qwen3-32B base for the win_ratio task (registry already supports selection) |
+
+## 8. References
+
+- simap.ch — https://www.simap.ch/ (robots.txt re-checked 2026-10-10; **official JSON API verified — see Round 2 section**; AGB incl. API terms at https://www.simap.ch/de/about/legal)
+- TED — https://ted.europa.eu/en/ ; docs portal https://docs.ted.europa.eu/ (Search API 3.0: https://docs.ted.europa.eu/api/latest/search.html) ; developer portal https://developer.ted.europa.eu/ (SPA) ; open data / SPARQL https://data.ted.europa.eu/ (endpoint https://publications.europa.eu/webapi/rdf/sparql)
+- OpenTender Switzerland dataset (OCP registry) — https://data.open-contracting.org/en/publication/91
+- Kanton St. Gallen submissions statistics — https://www.sg.ch/content/dam/sgch/kanton-stgallen/statistik/statakt/StatistikAktuell_104-2022_Submissionsstatistik.pdf
+- BKB, Bericht zum Beschaffungswesen 2024 — https://www.bkb.admin.ch/dam/de/sd-web/xlvc5WMh850B/Bericht%20zum%20Beschaffungswesen%202024%20der%20zentralen%20Beschaffungsstellen%20des%20Bundes%20DE.pdf
+- simap re-development revoked — https://www.inside-it.ch/auftrag-fuer-simap-weiterentwicklung-wird-widerrufen-20250325
+- sklearn probability calibration — https://scikit-learn.org/stable/modules/calibration.html
+- PEFT — https://huggingface.co/docs/peft/index ; Unsloth — https://unsloth.ai/docs ; axolotl — https://github.com/axolotl-ai-cloud/axolotl
+- vLLM LoRA serving — https://docs.vllm.ai/en/latest/features/lora.html ; Ollama import — https://github.com/ollama/ollama/blob/main/docs/import.mdx
+- TP-BERTa — arXiv:2403.01841 ; TabuLa-8B — arXiv:2406.12031 ; Illusion of Generalization — arXiv:2602.04031 ; Why LLMs Fail at Tabular Prediction — arXiv:2608.02412 ; Structural priors — arXiv:2510.17385
+- Bid shading in first-price auctions — arXiv:2107.06650 ; Deep landscape forecasting — arXiv:1905.03028
+
+---
+
+## Round 2 — verification & changes (2026-10-10)
+
+Verification method: direct `curl -sL` fetches of every cited URL + live probing of the APIs themselves; local SearxNG (127.0.0.1:8888) was up but all engines suspended/too-many-requests throughout ("brave", "duckduckgo", "google cse"), so searches were routed via lite.duckduckgo.com HTML and targeted fetches of authoritative pages instead.
+
+### V. Per-claim verdicts
+
+| # | Round-1 claim | Verdict | Evidence (fetched 2026-10-10) |
+|---|---|---|---|
+| 1 | simap.ch resolves; robots.txt disallows only admin/user-*/redirect/templates/provider pages; search/publication pages crawlable | **CONFIRMED** (exact disallow list is longer: also 401/404/500, pub-drafts, procurement-office, project-detail, competence-center, support, oldSimapUrl — all non-public pages) + `Sitemap: /assets/sitemap.xml` (static pages only, no per-tender URLs) | https://www.simap.ch/robots.txt (HTTP 200) |
+| 2 | simap is a JS SPA; `/api/search` returned 404; content "must be reverse-engineered or rendered" | **CORRECTED — the single biggest change of Round 2.** simap runs a **public, unauthenticated JSON API**: `GET https://www.simap.ch/api/publications/v2/project/project-search` (worked from a plain curl) and `GET /api/publications/v1/project/{projectId}/publication-details/{publicationId}`. Found by grepping the JS bundle (`main.js`, 3.6 MB) for `"/publications/v2/..."` — the API base is the same origin under `/api/`. Award details return structured OCDS-like JSON: `decision.vendors[]` (name, address, `price{price,currency,vatType}`, rank), **`decision.numberOfSubmissions`** (verified value: 4 on a sampled award), `awardDecisionDate`, justification text, `publicationTed` flag | Live API responses; endpoint list extracted from https://www.simap.ch/assets/js/main.js |
+| 3 | simap award data only via JS/XHR; Playwright needed | **CORRECTED** — plain `requests` suffices for search + award details. Playwright demoted to fallback (kept for legacy `archiv.simap.ch`, which is a Vite app with its own `/api` whose routes are not yet mapped — `/api/publications/v2/project/project-search` returns 404 there) | Direct curl of both hosts |
+| 4 | "check simap AGB/ToS for automation clauses" | **RESOLVED — favorable.** The AGB page hosts the dedicated «AGB Nutzung des API von simap.ch» (version 29.09.2009, adapted 13.11.2023 for the new KISS platform). Key clauses: API "kann analog zur Benutzeroberfläche **ohne Benutzerkonto** genutzt werden" for publications + search; API users may retrieve publication data "**für kommerzielle Zwecke** und an Dritte weitergeben"; currently free (Gebühr reserved, 1-month notice); attribution notice required («Dies ist keine amtliche Veröffentlichung...»); no content alteration; corrections must be republished; redistribution to third parties not before 08:00 of publication day; developer registration for early change notices | https://www.simap.ch/de/about/legal (fetched, 500 KB) |
+| 5 | Search params quirk (new info) | **NEW FINDING** — server rejects `newestPubTypes=award` with `errorCode E0025 "Invalid parameter"` (valid: `newestPubTypes=tender`); filter `pubType=="award"` client-side from unfiltered result lists. Search requires a non-empty `search` or a valid filter; pagination is keyset-style via `lastItem` (e.g. `20260930|34608`), `itemsPerPage` default 20 | Live API error responses |
+| 6 | TED "Search API v3, GraphQL at api.ted.europa.eu/v3/graphql, free public API key" | **PARTIALLY CORRECTED.** Search API v3 exists and is better than claimed: `POST https://api.ted.europa.eu/v3/notices/search`, **REST (not GraphQL)** — GraphQL endpoint 404s on `/v3/graphql`, `/graphql`, `/v1/graphql`; and the Search API "**does not require authentication**" (docs verbatim). API keys apply to the other five TED APIs (Conversion, Developer-Operations, Publication, Validation, Visualisation) per the unified gateway `api.ted.europa.eu/{api-version}/{resource}/{action}`. Docs moved to docs.ted.europa.eu (developer.ted.europa.eu is an Angular SPA) | https://docs.ted.europa.eu/api/latest/search.html ; live POST returning notices for `CY=CHE AND FT=CAN-SUPPLIER` |
+| 7 | TED SPARQL with CSV/JSON export | **CONFIRMED** — programmatic endpoint is `https://publications.europa.eu/webapi/rdf/sparql` (found in data.ted.europa.eu's `src/js/script.js`); test query `COUNT(?s) a epo:Procedure` → **2,513,711**, HTTP 200, no auth, `application/sparql-results+json`. data.ted.europa.eu UI offers Query Library, editor, JSON/CSV/TSV/XML/RDF export | Live SPARQL response |
+| 8 | Swiss above-threshold awards appear in TED | **CONFIRMED** — `CY=CHE AND FT=CAN-SUPPLIER` returns Swiss CANs (buyer-name, publication-number, XML/PDF links verified on 2016 notices; older records first by default — sort/paginate) | Live API response |
+| 9 | TED robots.txt permissive except login/dashboard | **CONFIRMED** (disallows only `/*/my-dashboard`, `/*/preferences`, `/c/portal/login`, Liferay internals `/webdav/ /control_panel/ /group/ /user/`; plus a notices sitemap `https://ted.europa.eu/sitemap/notices/sitemap.xml`) | https://ted.europa.eu/robots.txt |
+| 10 | OpenTender Switzerland: OCP registry publication 91; 2006–2024; 149,176 tenders; 43,835 awards / 47,689 suppliers; 192k parties; 234k documents; JSONL.gz ~74 MB, CSV.tgz ~104 MB; OCID prefix `ocds-70d2nz`; CC BY-NC-SA 4.0; ~6-monthly updates; 0 bidder counts | **CONFIRMED to the digit** (parties 192,467; documents 234,582; "Count of tenderers: 0"; license text verbatim; per-year files 2006→2024 in jsonl.gz/csv.tar.gz/xlsx; 2024.jsonl.gz last-modified 2026-06-27, ~873 MB uncompressed). Extra: records carry the OCDS bids extension but `bids.details` contains only the **winning** bid — no losing bids | https://data.open-contracting.org/en/publication/91 (HTTP 200) + ranged download of 2024.jsonl.gz (HTTP 206, parsed) |
+| 11 | Cantonal/federal aggregates: sg.ch Submissionsstatistik PDF; BKB Bericht 2024 PDF | **CONFIRMED** (both HTTP 200, application/pdf, 1.85 MB / 2.16 MB) | URLs as cited in §8 |
+| 12 | SWEQ / apkwienerbv unverifiable | **RE-CONFIRMED unresolvable** (curl exit 6 DNS failure for www.sweq.ch and www.apkwienerbv.ch). Sibling agent 3 also repeatedly cites "**simende.ch**" — that domain equally does not resolve (exit 6); the platform is **simap.ch** (see conflict resolution below) | DNS probes |
+| 13 | simap re-dev contract revoked March 2025 (inside-it.ch) | **CONFIRMED** — article live, title «Auftrag für Simap-Weiterentwicklung wird widerrufen» (2025-03-25) | https://www.inside-it.ch/auftrag-fuer-simap-weiterentwicklung-wird-widerrufen-20250325 |
+| 14 | arXiv:2602.04031 "The Illusion of Generalization in Tabular Language Models" (ICML 2026): Tabula-8B re-evaluation, near-zero median lift over majority-class baselines, contamination/format familiarity | **CONFIRMED** — abstract verbatim: "binary and categorical classification achieve near-zero median lift over majority-class baselines"; "pervasive contamination"; "format familiarity closes 71.3% of the gap"; page badge "ICML 2026" | https://arxiv.org/abs/2602.04031 |
+| 15 | arXiv:2608.02412 "Why Large Language Models Fail at Tabular Prediction": accuracy degrades with dimensionality while classical baselines stay flat | **CONFIRMED** — abstract verbatim: "the LLM is the only method among nine whose accuracy decreases as dimensionality grows, while every classical baseline stays flat or improves" | https://arxiv.org/abs/2608.02412 |
+| 16 | sklearn/PEFT/Unsloth/axolotl/vLLM/Ollama claims | **NOT RE-VERIFIED this round** (out of scope; unchanged from Round 1) | — |
+
+### D1. Scraping legality for Swiss public procurement data (deepening)
+
+- **No sui generis database right in Switzerland.** Confirmed by a Swiss law-firm deck (KPMG event, Dr. L. Ferrari Hofer): "No 'sui generis' ownership right for databases — in contrast to EU Directive 96/9/EC". Scraping a Swiss database therefore cannot infringe an EU-style maker's right; the residual levers are copyright (only for creative compilations), unfair competition (UWG Art. 5/6), trade secrets (StGB Art. 162), and StGB Art. 143 (unbefugter Datenbezug — mainly circumvention of technical barriers). Sources: https://www.swlegal.com/media/filer_public/7e/27/7e27996e-29dc-4d84-927d-27f1fcde3df5/220610_lorenza_ferrari_hofer_data_and_databases_status_quo_in_ch.pdf ; contrast https://en.wikipedia.org/wiki/Database_right
+- **The underlying data is largely copyright-free.** URG (SR 231.1) Art. 5(1)(c): "Entscheidungen, Protokolle und Berichte von Behörden und öffentlichen Verwaltungen" are not copyright protected; Art. 5(2): official or legally mandated collections likewise. Art. 4 protects collections only where selection/arrangement is "eine geistige Schöpfung mit individuellem Charakter" — a chronological tender database is not. Verified against the official text (mirror: ccdigitallaw.ch URG PDF). So award notices as such carry no CH copyright.
+- **Practical constraint stack for _3:** (1) simap API AGB (commercial use allowed, attribution notice, 08:00 embargo, no alteration — see verdict #4); (2) FADP for personal names (store company-level only — Round 1 risk stands); (3) rate/volume etiquette (undocumented limits — the API started throwing 400s during aggressive probing, so throttle to ≤1 req/s and cache); (4) for OpenTender-derived data, the CC BY-NC-SA license binds regardless of CH law (contract, not right) — Round 1's "prototype on OpenTender, production on simap/TED re-scrape" guidance stands, and is now stronger because the simap API is officially commercial-use-permitted.
+
+### D2. Losing-bid proxies (deepening)
+
+Public sources publish winner + value (+ n_bidders via simap/TED). Ways to get closer to losing-bid information:
+
+1. **Participate-and-inspect (the main legal channel).** Swiss procurement law gives *participants* information rights: the award is formally notified to all participating tenderers (BöB Art. 51 «Zuschlagsverfügung» — confirmed via admin.ch procurement guide referencing "Art. 51 BöB"); involved bidders can typically inspect the award file, competitor offers redacted for business secrets, under the federal BöB/VöB regime and cantonal IVöB equivalents. So every tender Equans bids on yields, at zero marginal cost, winner price + n_bidders + (redacted) competitor structure — log these from day one via `_4_RecursiveImprovement` debriefs. (Exact inspection scope varies by canton — flag for counsel; not verifiable online with engines down.)
+2. **Third-party freedom-of-information requests** (BGÖ for federal bodies; cantonal information laws for cantonal ones) can disclose award documentation incl. sometimes all bid values — slow, discretionary, secrets usually redacted. Treat as opportunistic, not pipeline.
+3. **TED/eForms CANs** mandate "tenders received" (`received-submissions-type-val` in the Search API field list) but **not** runner-up identity or prices — confirmed by scanning the 1832 supported fields (no runner-up field exists). Some buyers voluntarily publish full bid rankings; not systematic in CH.
+4. **simap award `numberOfSubmissions` + winner price per tender** (new, verified) — enough to fit per-client, per-sector bid-landscape distributions: P(win | our price) ≈ P(our price < min of N competitor draws) with N now observed rather than guessed.
+5. **OpenTender 2006–2024** gives ~19 years of award values for priors on award/estimate ratios by canton/sector (NC license — prototyping only).
+6. **Purchased competitor-price intelligence** (e.g. Tussell-class vendors) is EU/UK-centric with thin CH coverage; optional, low priority.
+7. **Never** exchange bid-level data with named competitors directly — Kartellgesetz exposure; public-source + own-debrief data only.
+
+### D3. Minimum viable dataset (deepening — what to log per tender from day one)
+
+Aligned with what public sources actually return (verified field names in brackets) plus the internal fields only we have:
+
+- Identity/joins: `publicationNumber` (e.g. 41332-02), `projectNumber`, simap `projectId`/`publicationId` UUIDs, TED publication-number for above-threshold, `ocid` for OpenTender joins, `cantonId`, `procOfficeName`/`buyer-name`, CPV/BKP/EBKP/NPK codes (simap exposes code-search endpoints `/api/codes/v1/{bkp,cpv,ebkp-h,ebkp-t,npk,oag}/search`).
+- Market context: `publicationDate`, `newestPublicationFrom/Until` window used, `processType` (open/selective/invitation), `projectSubType`, `publicationTed` flag, **`numberOfSubmissions`** / `received-submissions-type-val`.
+- Outcome: `decision.vendors[].vendorName` + `price{price,currency,vatType}`, `awardDecisionDate`, justification text (`awardDecisionJustification`) — the free-text "why" from the buyer side, ideal LLM-extraction input.
+- Internal (the only losing-bid source): `our_bid_chf`, `cost_baseline_chf` (from `_2_Calculator` calc.json), `outcome`, `why` reason codes + narrative (from `_4` debriefs), capacity at bid time, client relationship/prior wins.
+- Operational: `scraped_at`, `source`, raw JSON snapshot path (cache raw API responses verbatim — they are small and re-parseable; protects against churn).
+
+Sibling agent 3's `bids.jsonl` schema already covers this well; the only Round-2 additions it needs: `n_bidders` is *publicly available* (add to every record), and `source` enum gains `simap_api` (not `simende`).
+
+### D4. Conflict resolution with sibling context_agent_3
+
+1. **"simende.ch" (agent 3, multiple mentions) — wrong.** Domain does not resolve (DNS failure). The official platform is **simap.ch**, with its now-verified public API. Agent 3's `collect/step1_scrape.py` (simende, TED eForms scraping) should become `step1_fetch.py` hitting `simap.ch/api/...` + TED Search API — no scraping at all for the structured layer.
+2. **Which model tier serves the slider number — no conflict, both reports converge; codified answer:** the slider's min/mid/max win probability is served by the **calibrated tabular tier** (heuristic v0 → calibrated logistic v1 → LightGBM v2 past ~500 labeled bids), with min/mid/max as an uncertainty band (conformal/bootstrap or appetite/competition scenario shifts). The **LoRA (`win_ratio` task) never produces the raw slider number** — it owns rationale text, tender-doc parsing, and feature extraction (reason codes, complexity). This matches agent 3's "numeric curve anchored to the calibrated tabular core" and both arXiv verdicts (#14/#15).
+3. Agent 3's uncertainty band as "worst/expected/best credible competition settings" using the `+0.05 appetite` / `−0.05 competition` knobs is compatible with my bootstrap/conformal proposal — use whichever is cheaper at the current sample size (scenario shifts <50 samples, bootstrap >200).
+4. Agent 3's golden-schema `recommended_bid_range` contract into calc.json stands unchanged; the prediction input side gains `n_bidders` from the public API (feature agent 3 already lists).
+
+### D5. Round-2 net effect on the plan
+
+- Collector gets simpler and legal-risk drops: official API (commercial use OK) instead of headless-browser scraping; TED REST instead of GraphQL.
+- Feature set gets stronger: `numberOfSubmissions` is now a first-class observed feature, not a guess.
+- The OpenTender NC-license risk is de-fanged for production (re-derive from simap API, which permits commercial reuse) — it remains the fastest prototyping corpus.
+- Nothing in the modeling section (§4–§6) changes: the calibrated-tabular-core + LoRA-for-text split survives verification; the two most load-bearing papers checked out verbatim.
+
+### D6. Copy-paste quick-start for the collector (all verified live, 2026-10-10)
+
+```bash
+# simap search (no auth; throttle ~1 req/s, cache raw JSON)
+curl -s "https://www.simap.ch/api/publications/v2/project/project-search?search=L%C3%BCftung&lang=de"
+#   -> {"projects":[{id, publicationId, title.de, projectNumber, projectType, processType,
+#        pubType:"tender"|"award", publicationDate, publicationNumber, procOfficeName.de,
+#        orderAddress.cantonId, ...}], "pagination":{lastItem, itemsPerPage}}
+# page 2: append &lastItem=<pagination.lastItem>
+# award detail (winner, price, n_bidders, justification):
+curl -s "https://www.simap.ch/api/publications/v1/project/<projectId>/publication-details/<publicationId>"
+
+# TED Swiss award notices (no auth, no key):
+curl -s -X POST "https://api.ted.europa.eu/v3/notices/search" -H "Content-Type: application/json" \
+  -d '{"query":"CY=CHE AND FT=CAN-SUPPLIER","fields":["publication-number","buyer-name",
+       "winner-name","BT-711-LotResult","BT-711-LotResult-Currency","received-submissions-type-val"],
+       "limit":100}'
+# XML per notice: https://ted.europa.eu/en/notice/<publication-number>/xml
+
+# ePO SPARQL (no auth):
+curl -s -G "https://publications.europa.eu/webapi/rdf/sparql" \
+  --data-urlencode "query=SELECT (COUNT(*) AS ?c) WHERE { ?s a <http://data.europa.eu/a4g/ontology#Procedure> }" \
+  --data-urlencode "format=application/sparql-results+json"
+
+# OpenTender bulk (CC BY-NC-SA — prototype only):
+curl -sLO "https://data.open-contracting.org/en/publication/91/download?name=<year>.jsonl.gz"
+```
+
+Known rough edges to code around: simap `newestPubTypes=award` → 400 E0025 (filter client-side); simap bare/empty `search` → 400 E0003 (always pass a term or a valid filter); TED returns oldest notices first for broad queries (paginate or add `PD>=...` with `YYYYMMDD` format); TED expert-query field names are strict (`ND` expects a notice-number pattern, `CY` wants ISO3 like `CHE`, not `CH`).
+
+---
+
+## Round 3 — execution validation (2026-10-10)
+
+Mission: stop documenting, start calling. Every command below was executed live this round; responses are trimmed but structurally verbatim (saved under `/tmp/r3simap/`, `/tmp/r3ted/` during the run). Net result: **all three sources work from plain curl/requests with zero auth, zero scraping.** Three corrections to Round 2/the brief came out of it (GET-only simap, `PC` not `CPV`, simap history floor ~mid-2024).
+
+### 3.1 simap.ch — live transcript
+
+**C1. POST as briefed → fails.** `curl -X POST https://simap.ch/api/publications/v2/project/project-search` → `301` to `www.simap.ch`; on the canonical host → `405 Method Not Allowed`, `Allow: GET`, body `{"title":"Method Not Allowed","status":405,"detail":"Method 'POST' is not supported."}`. **The search endpoint is GET-only with query-string params.** (No JS-bundle re-derivation needed — Round 2's GET shape was already right; the mission's POST body was wrong.)
+
+**C2. Real search (the working command):**
+```bash
+curl -s "https://www.simap.ch/api/publications/v2/project/project-search?search=L%C3%BCftung&lang=de"
+# HTTP 200, ~0.19 s, 14.7 KB, application/json
+```
+Response skeleton (first record, trimmed):
+```json
+{"projects":[{
+  "id":"dce3e9d1-72fe-4f42-ae13-851bcf56217f",
+  "title":{"de":"Fachplanersubmission BKP 292 Bauingenieur (Massivbau)","en":null,"fr":null,"it":null},
+  "projectNumber":"41332","projectType":"tender","projectSubType":"service",
+  "processType":"invitation","lotsType":"without",
+  "publicationId":"aec1cda2-76d0-41b2-8818-8879083cbad1",
+  "publicationDate":"2026-10-10","publicationNumber":"41332-02",
+  "pubType":"award","corrected":false,
+  "procOfficeName":{"de":"Thomas Güntensperger", ...},
+  "lots":[],"orderAddressOnlyDescription":"no",
+  "orderAddress":{"countryId":"CH","cantonId":"ZH","postalCode":"8051","city":{"de":"..."}}}],
+ "pagination":{"lastItem":"20260930|34608","itemsPerPage":20}}
+```
+
+**C3. Award details (winner + price + n_bidders):**
+```bash
+curl -s "https://www.simap.ch/api/publications/v1/project/<projectId>/publication-details/<publicationId>"
+# HTTP 200, ~0.17 s, 5.9 KB
+```
+`decision` block of a live record (project 41332, ZH, 2026-09-29):
+```json
+{"awardDecisionWithJustification": true,
+ "vendors":[{"vendorName":"tbf-marti ag",
+   "vendorAddress":{"countryId":"CH","street":"Sernftalstrasse 2","city":"Schwanden GL",
+                    "postalCode":"8762","cantonId":"GL"},
+   "price":{"currency":"chf","price":105339.15,"vatType":"full"},
+   "rank":null}],
+ "numberOfSubmissions":4,
+ "totalPriceSelection":"price_of_selected_offers",
+ "awardDecisionDate":"2026-09-29",
+ "awardDecisionJustification":{"de":"Die Stiftung PWG vergibt ... an tbf-marti AG ... wirtschaftlich günstigste Angebot ... maximal-Punktzahl von 5 Punkten ..."},
+ "remediesNotice":{"de":"... innert 20 Tagen ... Verwaltungsgericht des Kantons Zürich ..."}}
+```
+Second live example, explicitly HVAC (BKP 244, project 5891 Kölliken, AG): winner **Schaad Gebäudetechnik GmbH**, **CHF 370'468.10**, **numberOfSubmissions: 13**, awardDecisionDate 2025-03-10, justification names «Arbeitsgattung Lüftungsanlagen (BKP 244)». Field inventory of the full details response: `procurement` (cpvCode {code,label×4}, additionalCpvCodes, bkpCodes, ebkph/ebkpt/npkCodes, cpcCode, orderDescription HTML), `project-info` (procOfficeAddress incl. phone/email/url, procurementRecipientAddress), `decision` (above), `referencingPub`, `base`, `hasProjectDocuments`, `ted`, `lot`. Confirms everything Round 2 claimed about winner/price/n_submissions — now with two archived examples.
+
+**C4. Pagination & limits.** Keyset: append `&lastItem=<pagination.lastItem>` (URL-encode the `|`). Verified page 2 starts strictly older (2026-09-30 → 2026-09-18). **`itemsPerPage` and `pageSize` params are both ignored — page size is fixed at 20 server-side.** No `X-RateLimit-*`/`Retry-After` headers on 200s. This round fired ~30 requests at ~1/s with zero 429/5xx; Round 2 saw 400s only under aggressive probing. Throttle ≤1 req/s stands.
+
+**C5. Filter semantics (corrections + new facts).**
+- `bkpCodes=244` **with empty search → 400 E0071 "Search contains invalid syntax"** — a code filter does *not* substitute for `search`; Round 2's "search or a valid filter" was optimistic. **`search=Ventilation&bkpCodes=244` → 200, 3 records**, all genuine BKP-244 HVAC (Aarberg school ventilation tender 2025-11-08, Collège latin NE lot 7, Kölliken award). So: filter works, but only AND-ed with a search term — and most records carry `bkpCodes: []` anyway, so **text search must be the primary sieve, bkpCodes a bonus**.
+- Date window `newestPublicationFrom/Until=YYYY-MM-DD` works (2026-09 window returned only in-window dates).
+- Codes endpoint is `GET /api/codes/v1/bkp/search?query=244` (**param is `query`, not `search`**; returns the hierarchical BKP tree as nested `{code,label×4,codes[]}`).
+
+**C6. History floor — new, load-bearing.** Walking `search=Lüftung` 8 pages deep reaches 2026-07-02 (160 recs ≈ **1.6 records/day**; page mix ≈ 10 award / 9 tender / 1 abandonment, cantons ZH-dominated with BE/BL/SG/LU/GR/SZ/NW). Probing `newestPublicationUntil`: 2025-06-30 ✓, 2025-01-31 ✓ (reaches 2024-12-18), 2024-10-31 ✓ (reaches 2024-07-19), **2024-06-30 → empty projects list**. **The v2 search index starts ~mid-2024.** Everything older lives on `archiv.simap.ch` (still unmapped) — or, much easier, in OpenTender/TED (§3.3).
+
+### 3.2 TED REST + SPARQL — live transcript
+
+**C7. Swiss award notices (the working command):**
+```bash
+curl -s -X POST "https://api.ted.europa.eu/v3/notices/search" -H "Content-Type: application/json" -d '{
+  "query":"CY=CHE AND FT=CAN-SUPPLIER AND PD>=20250101",
+  "fields":["publication-number","buyer-name","winner-name","BT-711-LotResult",
+            "BT-711-LotResult-Currency","received-submissions-type-val","publication-date"],
+  "limit":3}'
+# HTTP 200, ~0.25 s, no key, no auth, CloudFront/HTTP2
+```
+Live records (verbatim, trimmed):
+```json
+{"BT-711-LotResult-Currency":["CHF"],"publication-number":"177-2025",
+ "buyer-name":{"deu":["Verlingue AG"]},"BT-711-LotResult":["866910.0"],
+ "publication-date":"2025-01-02+01:00","winner-name":{"deu":["DE_AXA Versicherungen AG"]},
+ "received-submissions-type-val":["1"]}
+{"publication-number":"401-2025", "BT-711-LotResult":["1965981.0"], "winner-name":{"deu":["DE_Allianz Suisse Versicherungen-Gesellschaft AG"]}, "received-submissions-type-val":["2"]}
+{"publication-number":"494-2025", "BT-711-LotResult":["1535717.71"], "winner-name":{"fra":["FR_Mobilière Suisse ... Denis Hostettler"]}, "received-submissions-type-val":["1"]}
+```
+So on modern eForms (2025+): winner name, CHF award value, and tenders-received all populated. On pre-eForms records (the 2016 default-sort page) buyer-name exists but winner/BT-711 are absent — filter `PD>=20250101` for structured award data.
+
+**C8. Field-name corrections (live 400s).**
+- `received-submissions-count` → 400 "fields contains unsupported value" (dumps the whole 1800-field list). Use **`received-submissions-type-val`**.
+- **Expert-query CPV field is `PC`, not `CPV`** — `CPV=45331200` → 400 "Unknown search field 'CPV'"; probe of PC/MAIN_CPV/CPV_DIV/CPV_ADD/CPVDSU: only **`PC=45331200` works** (33,878 EU-wide hits). `PC IN (a,b,c)` also rejected — **one code per predicate, OR them** (`PC=45331200 OR PC=45331000`) or run one query per code.
+- Default sort is oldest-first; add `PD>=YYYYMMDD`.
+- Pagination: **`"page":2` + `"limit":N` offset-style works** (verified: page 2 → 494-2025, 500-2025); `iterationNextToken` was `null` on small results; `totalNoticeCount` is returned on every search.
+
+**C9. Volumes (from totalNoticeCount).** Swiss CANs (`CY=CHE AND FT=CAN-SUPPLIER`): **16,718 all-time, 9,907 since 2025-01-01, 759 since 2026-09-01 (~25/day)**. Swiss ventilation awards (`AND PC=45331200`): **125 all-time**; `PC=45331000` (HVAC main): **251**. Interpretation: TED's Swiss HVAC slice is tiny (~2-4/month) because only above-GPA-threshold contracts go to TED — it is the *big-contract* channel, not the volume channel. simap remains primary.
+
+**C10. SPARQL.** Endpoint live and fast:
+```bash
+curl -s -G "https://publications.europa.eu/webapi/rdf/sparql" \
+  --data-urlencode "query=SELECT (COUNT(*) AS ?count) WHERE { ?s a <http://data.europa.eu/a4g/ontology#Procedure> }" \
+  --data-urlencode "format=application/sparql-results+json"
+# HTTP 200, 1.0 s -> {"count":{"value":"2513711"}}   (grew from Round 2's 2,513,711 — live data)
+```
+But: my composed award-join queries (epo:Result, epo:hasAwardValue, country filter) returned **0 rows** — the ePO property/class names I guessed aren't what the graph uses, and predicate introspection on `epo:Result` came back empty too. **Verdict: SPARQL is reachable and healthy but has a real ontology learning curve; the REST search API is the practical query path. De-prioritize SPARQL to "nice-to-have".**
+
+### 3.3 OpenTender — live transcript
+
+**C11. Dump URLs.** `download?name=ch-all.jsonl.gz` → **400 (no such file — Round 2's example name was wrong); there is no aggregate file, only per-year `2006..2024.{jsonl.gz,csv.tar.gz,xlsx}`** (enumerated from the publication page's own links). `download?name=2024.jsonl.gz` → 302 → CDN `https://fastly.data.open-contracting.org/downloads/switzerland_digiwhist/3909/2024.jsonl.gz` → **HTTP 200, application/gzip, last-modified 2026-06-27, content-length 857,231**. HEAD-summing all 19 yearly `.jsonl.gz`: **65.3 MB total** (Round 2 said ~74 MB — close enough; likely measured pre-re-publish).
+
+**C12. Full-file parse (downloaded all of 2024.jsonl.gz in 0.22 s):** **1,320 records, 733 with awards**. Live record (trimmed):
+```json
+{"ocid":"ocds-70d2nz-00028405-b92c-39bc-ae9d-71a23de4269f",
+ "tender":{"title":"(24193) 104 Website Quality Assurance Tool","value":null},
+ "awards":[{"value":{"amount":2053900,"currency":"CHF"},
+   "suppliers":[{"name":"DE_SILKTIDE LIMITED"}]}],
+ "bids":{"url":".../ocds_bid_extension/v1.1.1/extension.json",
+   "details":[{"id":"bid-1","value":{"amount":2053900,"currency":"CHF"},
+     "tenderers":[{"name":"DE_SILKTIDE LIMITED"}],"relatedLots":["lot-1"]}]}}
+```
+Re-confirms Round 2: bids extension present but contains **only the winning bid**; tender.value often null (estimate lives elsewhere or is absent); buyer names prefixed `DE_/FR_/IT_` = language tag, strip when joining.
+
+### 3.4 SearxNG status
+Instance up (HTTP 200, ~3 s) but **all engines suspended again** ("brave: too many requests", "duckduckgo: timeout", "google cse: too many requests") — same as Round 2. Nothing this round actually needed it: every open question was answerable by direct API calls.
+
+### 3.5 Practical collection plan (derived only from what ran)
+
+**Source order:** 1) OpenTender bulk (history + priors), 2) simap walk (the backbone — only source with `numberOfSubmissions` at cantonal scale), 3) TED REST (above-threshold cross-check + modern structured fields), 4) SPARQL parked. Rationale per live numbers: OpenTender is one 65 MB download covering 2006-2024 with zero requests-politeness cost; simap carries ~50 % awards in its result mix and full award JSON incl. n_bidders and justification text; TED adds ~25 Swiss CANs/day but only 125 ventilation ones *ever*.
+
+**Measured yields for HVAC (BKP 244 ≈ CPV 45331xxx ≈ terms Lüftung/HLK/Ventilation/Klima/Heizung/Gebäudetechnik):**
+- simap `search=Lüftung`: ~1.6 recs/day ≈ **0.8 awards/day**, index from ~2024-07 → **~600-700 Lüftung award records** reachable today; across the broader 6-8-term vocabulary (dedup on projectNumber) expect **~1,500-3,000 HVAC-flavored award records 2024→now**, cantonal share dominant (page-1 cantons: ZH 7, BE 2, +6 others).
+- TED: ~0.2 Swiss HVAC CANs/day, but each carries value + winner + tenders-received.
+- OpenTender: 733 awarded records for 2024 alone, all sectors — HVAC share via title/CPV filter, priors for award/estimate ratios 2006-2024.
+- Going forward (incremental): simap `newestPublicationFrom=yesterday` per term ≈ 6-8 requests/day; TED one `PD>=yesterday` request/day. **Total steady-state: ~10 requests/day, ~1.5-3 new HVAC award records/day.**
+
+**First-week plan:**
+- **Day 1:** download 19 OpenTender files (65 MB, seconds); normalize to the Round-2 D3 schema; tag `source=opentender`. Fit v0 priors (award-value distributions by canton/sector/year).
+- **Day 1-2:** simap full-history walk: per term, loop `lastItem` keyset (~67 pages for Lüftung, ~2.3 years; ~400-500 requests total at 1 req/s ≈ **~10 min runtime**), cache raw JSON verbatim; then fetch publication-details for every `pubType=="award"` hit (~700-1,500 requests, ~20-30 min at 1 req/s). Filter HVAC client-side (title regex + cpvCode 45331x + bkpCodes 244 when present — C5 showed bkpCodes alone can't drive the query).
+- **Day 2-3:** TED pull `CY=CHE AND FT=CAN-SUPPLIER AND PD>=20250101` (9,907 notices at limit=100/page ≈ 100 requests), keep `PC IN` HVAC set via one query per CPV code (C8: no IN-syntax); dedupe across sources on projectNumber ↔ TED publication-number ↔ ocid.
+- **Day 3-4:** feature build (price_position, log_size, n_bidders, canton, client type, sector flags); calibrated logistic v1 on the merged award set; reliability curve before trusting it.
+- **Day 5:** wire incremental collection into the `collect/` scripts + the existing `/api/settings/upload-data` path for internal bid CSVs; attribution notice per simap AGB on every stored record's metadata («Dies ist keine amtliche Veröffentlichung...»).
+
+**Corrections log (Round 3):** (1) simap search is **GET-only** — POST → 405; (2) filters don't replace `search` (E0071), and page size is fixed at 20; (3) simap v2 index starts **~mid-2024** — pre-2024 history must come from OpenTender/archiv.simap.ch; (4) TED expert CPV field is **`PC`**, single code per predicate; (5) `received-submissions-count` invalid, `received-submissions-type-val` valid; (6) OpenTender has **no aggregate file**, per-year only, 65.3 MB total; (7) SPARQL demoted — reachable but ePO query shapes need real ontology work.

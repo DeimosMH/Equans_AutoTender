@@ -1,0 +1,507 @@
+# Context Agent 6 - Technique & Tooling Research for _4_RecursiveImprovement
+
+- **Date:** 2026-10-10
+- **Module:** `src/_4_RecursiveImprovement`
+- **Agent:** 6 of 6
+- **Angle:** concrete techniques/tools for post-mortem analysis, feedback-driven model updating, reporting (not architecture)
+- **Sources:** repo reading (`src/_4_RecursiveImprovement/todo`, root `notes.md`, `src/web_ui/server.py`, `src/_2_Calculator/readme.md`) + live web research via local SearxNG (verified working; queries listed in References)
+
+## What exists today (repo facts this must build on)
+
+- **todo:** tender didn't pass -> determine why (UI folder with all internal tender data + link to the tender information with competition applications); info-gathering **success** -> update the success-estimation model, "allow fallback/switch"; info-gathering **failure** -> generate a report. Also: productivity factors static for now, later "Set in UI or use AI + lora".
+- **notes.md:** "use records of feedback, each time using it"; competitor-price observations ("when you participate in this tender, this other company, you are 10% expensive"); win probability / forecast named as the hardest part.
+- **web_ui/server.py settings flow:** `TASK_KEYS = (input_processing, productivity_factors, win_ratio)`; `POST /api/settings/update` (task + links) appends `{"version": <date or date %H:%M>, "base": base_model}` and **immediately sets it `selected`**; `POST /api/settings/upload-data` stores raw files under `uploads/lora_data/{task}_{ts}_{name}`; retraining is assumed to happen externally/automatically. Versions trained for a different base model are kept but not selectable.
+- **_2_Calculator conventions to mirror:** everything is stdlib (+pyyaml only); money is `Decimal`, round half-up to 2dp; every result records its inputs for traceability (`calc.json` stores `input.mode` + `positions_file`); `AUTOTENDER_CALC_OUT` / `AUTOTENDER_FACTORS` env overrides; `validate.py` = golden-example regression harness (22/22 match). The web UI already hand-rolls PDF (`pdf_report`), DOCX (raw OOXML in `docx_report`) and standalone HTML offers with zero heavy deps.
+
+---
+
+## 1. Win/loss post-mortem methods (the "determine why" branch)
+
+| Technique | What it does | When to use | Trade-offs | Recommendation here |
+|---|---|---|---|---|
+| Structured loss taxonomy + checklist | Classify each loss: price too high / scope mismatch / spec non-compliance / missing doc / competitor advantage / client history | Immediately; every closed tender | Cheap but partly subjective; needs consistent categories to be aggregatable | **Do first.** A fixed `loss_reason` enum in the feedback record (schema below) makes later stats possible. Human picks category, AI drafts the narrative |
+| Delta-vs-winner decomposition | Compare our bid vs winning price per position group; "we are 10% expensive vs X on dimmers" | When competition application data (todo's "link to tender information") is retrievable | Requires competitor line prices - often only total is public; position-level inference is estimation | **Core of the post-mortem UI.** Store both observed totals and inferred per-group deltas, marked `observed` vs `estimated` |
+| Feature attribution (SHAP) on win model | Attribute win probability to price, margin, competitor count, client, scope size | Only once a tabular win-model with 50+ outcomes exists | Needs `shap` (heavy, non-stdlib); unstable with correlated features; slow on small data | **Defer.** With <50 tenders use plain logistic regression coefficients + likelihood-ratio tests (stdlib-implementable); add SHAP only if/when a real model trains on hundreds of records |
+| Classic bidding models (Friedman / Gates) | Win-probability-vs-markup curves fitted from historical bid ratios (our bid / lowest competitor) | Once ~20-30 bid-ratio observations exist | Assumes stationary competition & independence; per-competitor fits need even more data | **Good fit for _3_Prediction**, fed by the records _4 accumulates. Fit per-client-type, not per-competitor, until data volume justifies it |
+| Competitor benchmarking table | Running stats per competitor: median gap %, win count, tenders seen | Continuous, from every outcome record | Swiss procurement publishes winner + sometimes all bids per canton - retrieval effort is the cost | **Implement as a periodic recompute over the record store** (like `step4` summaries), not a live query |
+| Paired before/after review | Compare what changed between our last N winning vs losing bids (margin, factors, scope) | After each model/version switch | Confounds time-based drift | **Cheap and interpretable; include in the generated report** |
+
+## 2. Bayesian updating for small-sample win rates (the "update estimation of success" branch)
+
+| Technique | What it does | When to use | Trade-offs | Recommendation here |
+|---|---|---|---|---|
+| Beta-Binomial conjugate updating | `win_rate ~ Beta(alpha0 + wins, beta0 + losses)`; prior carries between tenders | Any sample size; this is the correct small-n tool | Choice of prior matters at n<5; point estimate hides uncertainty | **Primary technique.** ~15 lines of stdlib (`math`, no scipy needed for mean/CI via closed forms or a few thousand `random.betavariate` draws). Store `(alpha, beta)` per segment, update on each outcome |
+| Empirical-Bayes shrinkage | Segment rates (per client type / competitor / region) shrunk toward the global rate proportional to segment size | When some segments have 1-3 observations | Slightly more code; needs all records present | Use the simple version: `shrunk = (alpha0 + w) / (alpha0 + beta0 + n)` with `alpha0+beta0 ~= 10` pseudo-counts; document the constant |
+| Thompson sampling | Sample from each variant's Beta, pick the action with the best sample | For choosing among candidate margins/variants when outcomes are sparse and sequential | Off-policy bias if selection is not logged; exploration costs money in tenders | **For factor/margin exploration only, conservative epsilon.** Log which variant *would* have been chosen so offline eval stays honest |
+| Hierarchical Bayes / partial pooling | Full multi-level model across segments | n > 100 per level | Requires PyMC/Stan - violates the stdlib-lean constraint | Skip for now; the shrinkage heuristic above captures 80% of the value |
+| Price-elasticity from sparse outcomes | Logistic regression of win on log(price ratio): coefficient = elasticity proxy | After ~30 outcomes with price variation | Observational data is confounded (we bid high on hard jobs); no true counterfactual | Fit the 1-2 parameter logistic model in stdlib (grid search / Newton on log-likelihood); report the CI, treat point estimate skeptically; the "10% more expensive than competitor X" observation is exactly this feature |
+
+## 3. Continuous learning for LoRA adapters (feedback -> updated model, "allow fallback/switch")
+
+| Technique | What it does | When to use | Trade-offs | Recommendation here |
+|---|---|---|---|---|
+| Full-data incremental fine-tune (retrain from base on all accumulated data) | Each new dated version = base model + entire accumulated dataset | Default for small datasets (< few thousand examples) | Compute cost grows; slow drift of behavior | **Default here.** Data volume is small (tenders are monthly-ish); retraining on base+cumulative data is the simplest anti-forgetting method |
+| Replay buffer / rehearsal mix | Mix a fixed fraction of old examples into each incremental update | When incremental training from the previous adapter | Extra bookkeeping (the buffer IS the uploads store); selection policy matters | The `uploads/lora_data` files already form a natural replay corpus - keep them forever, always include prior data in any incremental job |
+| Regularization (EWC / L2-SP / weight averaging) | Penalize drift from previous weights to protect old skills | Long task sequences | Tuning-sensitive; EWC needs Fisher computation | Overkill at this scale; note for later |
+| Adapter merging / task vectors | Merge or arithmetic-combine LoRA deltas | Combining weak datasets; unlearning outliers | Merge artifacts (rank/alpha mismatch, task interference) | Not needed while each task trains separately (which the per-task version lists already model) |
+| Catastrophic-forgetting guard via golden set | After training, re-run a fixed eval suite; reject if regression on old capabilities exceeds threshold | Always, before any promotion | Needs a curated eval set that stays valid | **Key recommendation - mirror `validate.py`.** One small golden set per task (kept in git, like `materials/expected_output_example.json`), scored on every new version |
+| Shadow / champion-challenger evaluation | New version runs in parallel on live inputs; outputs logged, not served; compare metrics over a window | Before "selected" flips - the fallback/switch decision | Doubles inference cost during window; needs outcome patience | **The gating mechanism (next section).** "Shadow" fits this repo: score new adapter on the same tenders, human confirms promotion |
+| A/B (split traffic) | Randomly serve old/new to real traffic | High-volume settings | Tender volume is far too low and each bid too consequential for live A/B | **Reject** - shadow + golden-set eval instead |
+
+## 4. Model registry / versioning for a small local-first setup
+
+| Technique | What it does | Trade-offs | Recommendation here |
+|---|---|---|---|
+| MLflow / ZenML / DVC registry | Full experiment tracking, artifacts, model lineage | Server/daemon + DB + client SDK; large dependency surface contradicting stdlib-lean setup | **Reject for now.** Revisit only if experiments multiply |
+| File-based manifest in git (versions.json per task) | Version id, base model, training-data file hashes, metrics, status, timestamps, who promoted | No tooling; human-readable; diffable; scales fine to dozens of versions | **Adopt.** `ui_settings.json` already half-implements this; extend the version dicts (schema below) instead of adding a registry product |
+| Directory-convention registry (`/data/loras/{task}/{version}/adapter/` + `meta.json`) | Adapter artifacts next to their metadata | Relies on naming discipline | Adopt alongside the manifest; manifest records the path + sha256 of the adapter dir |
+| Semantic versioning / dated ids | `2026-10-02` today; collisions get ` %H:%M` appended | Dated ids sort naturally but encode nothing about compatibility | Keep dated ids (already established), add a monotonic `seq` integer for unambiguous ordering and rollback references |
+
+## 5. Drift detection on prediction quality (when has the win model gone stale?)
+
+| Technique | What it does | Trade-offs | Recommendation here |
+|---|---|---|---|
+| Page-Hinkley test | Cumulative deviation of a stream metric vs its running mean; alarms on sustained shift | ~20 lines, stdlib; tunable sensitivity (delta/gamma); designed for gradual drift | **First choice.** Run on the stream of win-model errors: `error = 1 - predicted_win_prob` for losses, `-predicted_win_prob` for wins |
+| DDM (Drift Detection Method) | Binomial error-rate bounds (warning/drift at 2/3 std) | Simple; assumes binary error stream | Second choice; same data as P-H |
+| ADWIN | Adaptive windowing, theoretical guarantees, no params | Real implementation is nontrivial; `river` library has it | Only if `river` is ever allowed as a dependency |
+| Rolling calibration plot | Predicted win prob vs realized win rate by decile, last N tenders | No alarm logic, but humans read it instantly; also detects overconfidence | **Put in the generated report** - it doubles as the "should we switch models" evidence |
+| Data drift on inputs (competitor count, price ratios) | Input distribution shift as leading indicator | Needs distribution comparisons (PSI/KS) | Cheap version: track min/median/max of bid-ratio per quarter in the report |
+
+## 6. Report generation (the "generate a report" branch)
+
+| Technique | What it does | Trade-offs | Recommendation here |
+|---|---|---|---|
+| Hand-rolled HTML string templates (status quo) | `html_report()` builds standalone printable HTML | Zero deps; already proven in server.py | Keep as the **HTML target**; it already prints nicely |
+| jinja2 templating | Logic-bearing templates, autoescaping, filters | One pure-Python dep (same weight class as pyyaml); template files live in git | **Adopt for _4 reports**: one `postmortem.md.j2`/`postmortem.html.j2` per report type beats f-strings once sections multiply |
+| markdown lib + optional extension | `markdown` or `mistune` converts MD -> HTML fragments | Pure Python, tiny | Use if reports are authored as markdown; skip if jinja2->HTML directly |
+| WeasyPrint (HTML->PDF) | Real CSS paged media | Heavy native deps (pango/cairo); not stdlib-lean | Reject for server; fine for a local CLI on the dev machine |
+| fpdf2 | Pure-Python PDF writing, no system libs | Manual layout, no CSS | **Candidate if a PDF post-mortem is required server-side**; otherwise reuse the existing `pdf_report` hand-rolled writer style |
+| pandoc via subprocess | Any-to-any conversion incl. DOCX | External binary dependency | Reject for the server path; acceptable as an optional local dev convenience |
+| Raw OOXML DOCX (status quo `docx_report`) | Zip + XML strings | Verbose but already working in this repo | Extend only if the report must be editable DOCX |
+
+Bottom line: **markdown/jinja2 -> standalone HTML as primary artifact** (prints to PDF from the browser, zero new native deps), reusing the offer-PDF pipeline only when a real PDF attachment is needed.
+
+---
+
+## 7. Extending the LoRA version+update flow with evaluation gating
+
+Current: `POST /api/settings/update` appends a dated version and immediately marks it `selected`. Problem: a freshly "retrained" version becomes active with **no evaluation at all** - a regression in the adapter or in the training data goes live silently. This directly breaks the todo's "allow fallback/switch" requirement (there is no basis for switching and no recorded basis for falling back).
+
+Proposed version **state machine** (fields added to each entry in `tasks[task].versions[]`):
+
+```
+staged -> evaluating -> shadow -> active
+                     \-> rejected
+active -> rolled_back   (manual, one click back to previous active)
+```
+
+1. **staged** - `upload-data` + `update` create the version as before, but `selected` is NOT flipped. Fields: `status`, `data_files` (hashes of the `uploads/lora_data` batch), `base`, `created_at`, `links`.
+2. **evaluating** - run the golden-set suite for the task (the `validate.py` pattern): recompute the pipeline / score the adapter on the curated examples. Gate thresholds recorded per task in settings, e.g. `min_score`, `max_regression_vs_active`. Failure -> `rejected` with the score log kept; success -> `shadow`.
+3. **shadow** - for the next N tenders (or M days), both `active` and `shadow` versions produce predictions; only `active` is served outwardly; differences are logged per tender (`shadow_diff` records: version pair, input tender id, output delta). After the window, a comparison summary (including cost/price deltas, not just token metrics) is attached to the version entry.
+4. **active** - promotion is an explicit `POST /api/settings/promote` (task, version). This writes `promoted_at`, `promoted_by`, and appends to the version's history. `selected` in settings follows `active` by definition.
+5. **rolled_back** - one-click revert; previous `active` is restored; rollback reason recorded. This is the "fallback" half of the todo requirement - it must be possible without editing JSON by hand.
+
+Implementation notes for this codebase: it is a small change surface - `_norm_settings` gains `status`/`eval` fields (normalize missing -> treat existing versions as `active`), the POST handler stops setting `selected`, and two new endpoints (`evaluate` can be a background step the training job calls back, since retraining is already assumed external/automatic). All state persists in `ui_settings.json`; no new services.
+
+## 8. Concrete schema for feedback records
+
+One append-only JSONL file per tender folder (fits the "UI folder with all internal data" in the todo), plus a derived global index. Mirrors `_2_Calculator` traceability: every record carries the versions that produced it.
+
+```jsonc
+// outcome record - written when a tender result becomes known
+{
+  "record_type": "tender_outcome",
+  "tender_id": "2026-10-03_school_basel",
+  "recorded_at": "2026-10-09T14:22:00",
+  "outcome": "lost",                  // won | lost | withdrawn | no_bid | unknown
+  "our_bid_chf": 414489.12,
+  "winning_bid_chf": 398000.00,
+  "bid_ratio": 1.0414,                // our / winning, the Friedman-model input
+  "n_competitors": 4,
+  "client": "kanton-basel",
+  "segment": "school-hvac",
+  "loss_reason": "price_too_high",    // enum from the loss taxonomy
+  "loss_detail": "10% above winner on lighting-controls group",
+  "models_used": {                    // exact versions behind this bid (traceability)
+    "input_processing": "2026-09-12",
+    "productivity_factors": "manual",
+    "win_ratio": "2026-10-02",
+    "factors_snapshot": {"site_efficiency": 0.92}   // effective_factors() at bid time
+  },
+  "predicted_win_prob": 0.41,         // what _3 predicted, for calibration/drift
+  "postmortem": {"status": "complete",
+                 "sources_ok": true,   // info-gathering success/failure branch
+                 "report_path": "reports/postmortem_2026-10-03.md"},
+  "sources": ["ch.ch Publication 12345", "internal tender folder link"]
+}
+
+// competitor observation - the notes.md "other company, 10% expensive" record
+{
+  "record_type": "competitor_observation",
+  "recorded_at": "2026-10-09T14:25:00",
+  "tender_id": "2026-10-03_school_basel",
+  "competitor": " CompetitorX ",
+  "their_bid_chf": 398000.00,
+  "delta_vs_us_pct": -4.0,            // negative = cheaper than us
+  "basis": "total",                   // total | group:lighting-controls
+  "source": "tender_publication",
+  "confidence": "observed"            // observed | estimated
+}
+
+// derived (recomputed, not append-only): per-segment Beta posterior
+{
+  "segment": "school-hvac",
+  "alpha": 6.4, "beta": 9.1,          // includes prior pseudo-counts
+  "n_obs": 14, "updated_at": "2026-10-09",
+  "history_ref": "index/tender_outcome.jsonl"
+}
+```
+
+Conventions to inherit: Decimal-safe money as numbers at 2dp (write via the same `r2` helper), timestamps ISO like the rest of the UI, everything resolvable to files on disk (report path, tender folder), and a `validate`-style check that every `models_used` version exists in the settings manifest.
+
+## 9. Risks
+
+- **Overfitting to few observations:** shrinkage priors and CIs must be shown, never hide n; a win-rate change after 3 tenders is noise.
+- **Confounded elasticity:** we win easy jobs and lose hard ones; price-effect estimates from observational data are biased - state this in every report.
+- **Feedback leakage into training data:** post-mortem text contains client names/competitor prices; LoRA data uploads must be reviewed for what should be learned vs merely recorded (privacy + Swiss procurement confidentiality).
+- **Silent auto-promotion:** if the future automatic retraining pipeline calls `update` and anything auto-selects the new version, the gating above is void - `selected` must never be set by the training job.
+- **Date-collision version ids** (`2026-10-10` vs `2026-10-10 14:33`) make rollback references fragile; the added `seq` fixes ordering but migration of existing ids is needed.
+- **Golden-set rot:** curated eval examples stop representing reality; review them as part of the quarterly report cycle.
+- **Report PII:** generated post-mortems quote competitor prices - access control on the reports folder before this leaves localhost.
+
+## 10. References
+
+- SearxNG check + queries (win/loss post-mortem SHAP; beta-binomial win rate; LoRA continual learning; shadow/A-B deployment; drift detection; markdown->PDF; model registry; price elasticity sparse; LoRA multi-adapter serving; Friedman/Gates; Thompson sampling; river/ADWIN; lost-tender analysis) - local instance `http://127.0.0.1:8888`.
+- Friedman/Gates bidding models: Gates revisited - https://www.tandfonline.com/doi/abs/10.1080/01446193.2023.2181980 ; markup estimation overview - https://www.aast.edu/pheed/staffadminview/pdf_retreive.php?url=350_1037_CB519_2019_1__1_1_Bidding+Strategy+and+Markup+Estimation.pdf&stafftype=staffcourses ; Friedman model application - https://journal.unpar.ac.id/index.php/josc/article/download/7089/4323/24907
+- Beta-Binomial / Thompson sampling: Russo et al., A Tutorial on Thompson Sampling - http://web.stanford.edu/~bvr/pubs/TS_Tutorial.pdf ; Bayesian bandit bid shading - https://dl.acm.org/doi/pdf/10.1145/3627673.3680107
+- LoRA continual learning / forgetting: Continual Learning with Low Rank Adaptation (Amazon) - https://cdn.amazon.science/c7/f7/d42e873749ef9b2d3840df00f8db/continual-learning-with-low-rank-adaptation.pdf ; replay strategies - https://arxiv.org/html/2505.12512v1 ; forgetting in parameter-efficient FT - https://arxiv.org/html/2402.18865v1 ; continual fine-tuning practices - https://apxml.com/courses/how-to-build-a-large-language-model/chapter-30-continuous-training-model-updates/strategies-continual-fine-tuning ; SuRe prioritised replay - https://openreview.net/forum?id=IgZWU75BLL ; S-LoRA multi-adapter serving - https://arxiv.org/html/2407.00066v4
+- Shadow / A-B evaluation: Wallaroo A/B and shadow deployments - https://wallaroo.ai/ai-production-experiments-the-art-of-a-b-testing-and-shadow-deployments/ ; Statsig shadow testing - https://www.statsig.com/perspectives/shadow-testing-ai-model-evaluation ; Future AGI shadow/canary - https://futureagi.com/blog/llm-eval-shadow-traffic-canary-2026/
+- Drift detection: DDM/Page-Hinkley/ADWIN overview - https://mlmonitoring.report/posts/concept-drift-detection-methods/ ; river ADWIN API - https://riverml.xyz/dev/api/drift/ADWIN/
+- Registries: MLflow alternatives - https://northflank.com/blog/mlflow-alternatives ; DVC vs MLflow - https://mlai.qa/blog/dvc-vs-mlflow/
+- Report generation: Nutrient PDF library comparison - https://www.nutrient.io/blog/top-10-ways-to-generate-pdfs-in-python/ ; templated.io 8 tools compared - https://templated.io/blog/generate-pdfs-in-python-with-libraries/ ; Jinja2+Pandas report automation - https://medium.com/@bhagyarana80/how-i-automate-monthly-reports-with-pandas-and-jinja2-templates-9ee2c508cbf5 ; WeasyPrint HTML->PDF - https://www.nutrient.io/blog/how-to-generate-pdf-reports-from-html-in-python/
+- Lost-tender analysis practice: mytender.io lost tender analysis - https://mytender.io/de/blog/lost-tender-analysis-win-rate-improvement ; competitor bid analysis - https://www.useminerva.com/en/blog/how-to-analyse-competitors-winning-bids-and-improve-your-next-tender
+
+---
+
+## Round 2 - verification & changes
+
+- **Date:** 2026-10-10 (later same day)
+- **What happened:** every load-bearing repo claim from round 1 was re-read against the current files (line numbers below are from today's `src/web_ui/server.py`); the four assigned research topics were deepened; the version/promotion design was converged with agent 5's architecture report.
+- **Search caveat:** the local SearxNG instance was up but all general engines (brave / duckduckgo / google-cse) sat in "Suspended: too many requests" for the whole round, even after 45s+ backoffs - the round-1 queries throttled them for longer than a session. Deepening was done instead by fetching primary sources directly with `curl -sL` (arXiv API, river docs + river source on GitHub, Wikipedia, research.google, hamel.dev) and confirming the round-1 URL list still resolves (all 200 except tandfonline + dl.acm, which are bot-walled 403s, not dead links).
+
+### R2.1 Repo verification - every round-1 claim re-pinned
+
+**`POST /api/settings/update` (round-1's central finding) - CONFIRMED, exact behavior:**
+
+- Handler at `src/web_ui/server.py` L994-1009 (branch `parts[:2] == ["api","settings"] and parts[2] == "update"`).
+- L1003-1005: `version = time.strftime("%Y-%m-%d")`; if any existing version already has that id, it becomes `time.strftime("%Y-%m-%d %H:%M")` - the collision format round 1 flagged.
+- L1006: appends exactly `{"version": version, "base": settings["base_model"]}` - nothing else is stored per version today.
+- L1007: `t["selected"] = version` - **the new version is selected immediately, with no evaluation anywhere**. Round 1's core criticism stands verbatim.
+- `POST /api/settings/upload-data` at L1010-1023; L1022 writes `uploads/lora_data/{task}_{ts}_{name}` - CONFIRMED; the directory `src/web_ui/uploads/lora_data/` exists (currently empty).
+
+**`ui_settings.json` schema - CONFIRMED, and now pinned against the live file (not the defaults):**
+
+- `_norm_settings` L118-181; L132-135 rebuilds every version dict as only `{"version","base"}`. **Any extra field a future step writes into a version entry (`status`, `eval`, `provenance`, `seq`, ...) is silently stripped on the next load or save.** This is the single most important implementation fact for the gating design.
+- L136-138: `selected` is valid only if a version with that id exists *and* matches the current `base_model`; otherwise the first matching-base version is auto-selected (else None). The docstring L120-121 confirms "Versions trained for another base model stay stored but are not selectable".
+- `save_ui_settings` L199-214: L201 comment "the UI never edits versions directly - keep stored ones when not sent"; L207-211 re-derives `selected` to the *first matching-base version* when the incoming selection doesn't validate.
+- The live `src/web_ui/ui_settings.json` (differs from `DEFAULT_SETTINGS` L104-115) empirically confirms both risk claims of round 1: `productivity_factors.versions` contains the collision ids `2026-10-10`, `2026-10-10 15:21`, `2026-10-10 15:22` (fragile ordering), and `win_ratio.selected` is `null` because its only version is trained for `GLM-4.5-Air` while `base_model` is `GLM-4.6` - agent 5's "fallback state exists today" claim is exactly right.
+- Settings UI: `src/web_ui/static/index.html` L718 ("...versions trained for another base until they are retrained"), L751 fetches `/api/settings/upload-data`, L760 fetches `/api/settings/update`, L843-853 builds the version `<select>` from `task.versions.filter(v => v.base === base_model)` and posts the chosen `selected` through the generic settings save (server.py L1024-1026). So manual rollback-by-select already round-trips through the generic endpoint - the promote endpoint below can reuse that path.
+
+**Painters - CONFIRMED:** `Page` class L370, palette constants ORANGE/INK/CARD L294-297, `pdf_report` L530, `html_report` L674, `docx_report` L778, all hand-rolled in server.py. Agent 5's `report_painters.py` extraction plan is feasible as-is.
+
+**Corrections to round 1 (old -> new):**
+
+1. "Implementation notes ... `_norm_settings` gains `status`/`eval` fields" was understated -> it is not an optional nicety: L132-135 and L207-211 *both* hard-drop/override new fields and selection today; the state machine must change exactly those code points or it will silently not work.
+2. "shadow -> for the next N tenders both versions produce predictions" as a mandatory stage -> **dropped** (monthly tender volume makes a live shadow window take months). Replaced by agent 5's recorded-outcome backtest as the standard second gate; live shadow demoted to an optional flag for `input_processing` (per-tender output diffs, no bid risk).
+3. ADWIN row "no params" -> river's ADWIN exposes `delta=0.002`, `clock=32`, `grace_period=10`; and its Python module is a 137-line wrapper importing the real detector from compiled Rust (`river._river_rust.drift.AdaptiveWindowing`), while PageHinkley is 127 lines of pure Python (core update ~25 lines). "Real implementation is nontrivial" is therefore *more* true than round 1 stated.
+4. Beta-Binomial "~15 lines of stdlib" -> verified by running it (below): seeded `random.betavariate` (400k draws) for CrIs, plain arithmetic for means - no scipy, numbers reproducible.
+
+### R2.2 Deepened: catastrophic forgetting for LoRA/PEFT (replay vs EWC vs rebase)
+
+Primary sources (all fetched today):
+
+- **Rebase (retrain adapter from base on all data) is a legitimate CL strategy, not a cop-out.** "Continual Learning with Low Rank Adaptation" (Amazon, arXiv 2311.17601 - same paper as the round-1 cdn.amazon.science PDF, confirmed) shows simply retraining LoRA per domain outperforms prompt-tuning-style continual methods.
+- **Replay wins when memory is cheap - and ours is.** "Forget Forgetting: Continual Learning in a World of Abundant Memory" (arXiv 2502.07274): when storage is abundant but GPU time is the bottleneck, replay-based mitigation dominates and the residual challenge shifts from stability to *plasticity*. The `uploads/lora_data/` corpus is exactly this regime: keep every upload forever, always include prior data. Corroborated by "Dynamic Proxy-Mixing ..." (arXiv 2606.00400): "Replay is the standard mitigation, but fixed replay ratios are inherently limited" (optimal mix varies) - i.e. replay yes, but tune the old:new ratio rather than hard-coding 50:50.
+- **Subspace/isolation methods (InfLoRA arXiv 2404.00228, O-LoRA, Gated-LoRA arXiv 2505.15424, CLoRA arXiv 2507.19887, MuLoRA arXiv 2610.02283)** preserve old tasks without storing data by constraining updates to (near-)orthogonal low-rank subspaces. Cost: training-time complexity, merge/serving complexity (S-LoRA arXiv 2407.00066 exists precisely because multi-adapter serving is nontrivial). Verdict unchanged: **not for 3 tasks x monthly retrain.**
+- **EWC/L2-SP regularisation:** no new evidence in favor at small scale; remains tuning-sensitive (Fisher estimation noise on tiny datasets). Round-1 "overkill; note for later" stands.
+
+**Practical guidance for this repo (unchanged in conclusion, now evidence-backed):**
+1. Default: full rebase from base on cumulative corpus each retrain (anti-forgetting by construction).
+2. If incremental training from the previous adapter is ever introduced: replay mix with *tuned* ratio (start 70% old / 30% new; grid-search the ratio on the golden set), never train on the new batch alone.
+3. The golden-set regression gate (R2.4) is the safety net independent of which of the two above is used.
+
+### R2.3 Deepened: Page-Hinkley vs ADWIN for low-volume streams
+
+From river's docs and source (fetched today):
+
+| | PageHinkley (river) | ADWIN (river) |
+|---|---|---|
+| Parameters | `min_instances=30`, `delta=0.005`, `threshold(lambda)=50.0`, `alpha=0.9999` (forgetting), `mode='both'` | `delta=0.002`, `clock=32`, `grace_period=10` |
+| Implementation | 127 lines pure Python; CUSUM-style; **no warning zone** (unlike DDM) | Python file = wrapper; algorithm in compiled Rust (bucket/exponential-histogram compression) |
+| Stdlib re-implementation | ~25-line core | large (exponential histogram w/ bucket merging, variance bookkeeping) |
+| Default blind spot at our volume | `min_instances=30` = 2.5 years of monthly tenders before *any* detection | `clock=32` checks only every 32 points; `grace_period=10` |
+
+**Conclusion (sharpened):** PH remains the first choice, but defaults must be adapted: set `min_instances` ~ 8-10 (accept the variance), raise `threshold` to compensate for false alarms (river docs: lower threshold -> "more false positives"), and run it on the *weekly-cadence* stream of prediction errors (every tender that gets a decision adds a point; interim points from calibration checks on submitted-but-undecided tenders can pad the stream), not on a monthly-only cadence. Two-sided mode (`both`) matters because improvement is as informative as decay. ADWIN: adopt only if `river` is ever accepted as a dependency - do not hand-port it.
+
+Also verified round-1's DDM note indirectly: PH "does not signal warning zones, only change detections" (river docs) - so if a pre-alarm tier is wanted (round-1's report), it must be layered manually (e.g. PH threshold x0.5 as "watch").
+
+### R2.4 Deepened: Beta-Binomial / EB shrinkage - formulas + computed small-n examples
+
+Formulas verified against Wikipedia (Conjugate prior: Beta-binomial posterior = `Beta(alpha0 + wins, beta0 + losses)`, expressed there as `alpha + Sigma x_i, beta + Sigma(N_i - x_i)`; Empirical Bayes method: Beta-binomial is the canonical parametric EB model; Robbins' nonparametric `(y+1) P(y+1)/P(y)` noted but needs many exchangeable units - not our case).
+
+```
+posterior mean (shrunk rate): E[p|w,n] = (alpha0 + w) / (alpha0 + beta0 + n)
+95% credible interval:        seeded quantiles of random.betavariate(a, b)  (stdlib)
+MoM prior from segment rates m, v:  common = m(1-m)/v - 1;  alpha0 = m*common;  beta0 = (1-m)*common
+```
+
+Computed today with stdlib only (prior `Beta(3,7)`, i.e. pseudo-count total 10 around global mean 0.30):
+
+| data | raw rate | shrunk mean | 95% CrI (Beta) | Wilson 95% CI (no prior) |
+|---|---|---|---|---|
+| 1 win / 1 | 1.000 | **0.364** | [0.122, 0.652] | [0.207, 1.000] |
+| 3 wins / 3 | 1.000 | **0.462** | [0.211, 0.723] | [0.438, 1.000] |
+| 0 wins / 1 | 0.000 | **0.273** | [0.067, 0.555] | [0.000, 0.793] |
+| 2 wins / 8 | 0.250 | **0.278** | [0.103, 0.500] | [0.071, 0.591] |
+| 5 wins / 5 | 1.000 | **0.533** | [0.289, 0.769] | [0.566, 1.000] |
+
+Read: shrinkage converts "we always win school HVAC" (3/3) into "46% +- a huge interval" - exactly the anti-overfit message round 1 wanted, now with numbers. The Beta CrI is also *narrower* than Wilson at the extremes because the prior excludes 0/1 rates.
+
+**Method-of-moments trap (new finding):** on 6 toy segments (9 wins/30 tenders overall), MoM over between-segment rate variance yields `alpha0+beta0 = 0.7` - a nearly vacuous prior that barely shrinks 1/1 (0.701, still absurd). With few segments the MoM variance estimate is itself noisy and *over*estimates heterogeneity. **Practical rule: floor the pseudo-counts at `alpha0+beta0 >= 5` (prefer ~10) and cap at ~30; document the constant in `settings.yaml`, revisit quarterly.** This supersedes round 1's "alpha0+beta0 ~= 10, document the constant" - it is now a floor, not just a default.
+
+### R2.5 Deepened: evaluation-gate / promotion design (what threshold over how many samples)
+
+- **The ML Test Score** (Google, research.google.com/pubs/the-ml-test-score... - abstract fetched): 28 concrete tests across data / model / infrastructure / monitoring. Our gate is the "model" slice: feature sanity, golden-set eval, score-stability over time. Useful as the checklist that the `eval` block must cover before `promote` is offered in the UI.
+- **Hamel Husain, "Your AI Product Needs Evals"** (hamel.dev/blog/posts/evals/ - fetched): evaluation ladder = Level 1 scoped unit tests (golden set) -> Level 2 human+model eval on logged traces (humans must keep sampling traces; track human-vs-auto correlation) -> Level 3 A/B. Maps 1:1 onto our design: golden suite (L1), human confirm on promote screen (L2), A/B rejected for volume (round 1) - consistent.
+- **The honest statistics (the round-2 computation that matters):** proving *superiority* of a challenger win-model needs sample sizes in the hundreds (detecting a 5pp win-rate change at 80% power ~ 4n/(delta)^2 order - hundreds of monthly tenders = decades). Therefore the gate must be **non-inferiority** (clinical-trial concept: challenger acceptable if its CI on the primary metric does not extend worse than a pre-set margin delta beyond the champion), plus human judgment. Concretely converged:
+  - `input_processing` / `productivity_factors`: golden-set gate only - `mean_score_new >= mean_score_active - 0.02` over >= 50 curated examples (score = per-example 0..1, e.g. normalized match quality / exact-match on expected extraction), AND no single golden example below a hard floor (0.5). With n=50, a 2pp margin is resolvable; with n<30, require strictly >= champion.
+  - `win_ratio`: golden gate + outcome backtest - Brier score of challenger vs active on all recorded decided tenders, **challenger Brier <= active Brier + 0.02 with n >= 10 decided tenders** (out-of-time: train data must predate the eval window; Brier is the proper scoring rule for probabilistic outputs, Wikipedia "Scoring rule"/"Brier score" fetched 200).
+  - Both gates produce a written `eval` record (below) so a human can confirm promotion with evidence, never auto-flip `selected`.
+
+### R2.6 Converged design with agent 5 (resolves the round-1 conflict)
+
+Conflict: round-1 (this report) had `staged -> evaluating -> shadow -> active` with mandatory live shadow; agent 5 had champion/challenger with a recorded-outcome backtest and rollback-by-reselect. **Converged version (both reports should now describe this one):**
+
+**Version state machine** - statuses stored on each version entry:
+
+```
+staged  --(golden gate passed)-->  candidate  --(backtest gate passed + human promote)-->  active
+staged/candidate --(gate failed)-->  rejected          active --(superseded)-->  retired
+rollback = promote an older version again (previous active becomes retired; reason recorded)
+invariant: at most one version per task has status "active"; settings.selected == that version (or None)
+```
+
+Live shadow is an *optional flag* during `candidate` for `input_processing` only (dual-run, log output diffs per tender). No mandatory shadow stage - the recorded-outcome backtest replaces it.
+
+**Version entry schema** (extends agent 5's `provenance` and round-1's `status`/`eval`; backwards compatible - absent fields normalize to legacy behavior):
+
+```jsonc
+{"version": "2026-10-10 15:22",            // existing id format, unchanged (collision format kept)
+ "seq": 4,                                  // NEW monotonic int, assigned at registration (fixes id-collision ordering; no migration of old ids needed - seq derived from list order for legacy entries)
+ "base": "GLM-4.6",                          // existing
+ "status": "active",                         // NEW: staged|candidate|active|retired|rejected (missing -> legacy = active)
+ "created_at": "2026-10-10T15:22:04",
+ "data_files": [{"name": "win_ratio_20261010_152204_auto.jsonl", "sha256": "..."}],  // the upload batch that produced it (replay provenance)
+ "provenance": {"outcome_ids": ["t20261010_143121_4c08"], "samples": 14, "trigger": "auto"},  // agent 5's field, kept
+ "eval": {"golden":  {"score": 0.87, "floor_breaches": 0, "ran_at": "...", "passed": true},
+          "backtest": {"n": 14, "brier": 0.187, "active_brier": 0.192, "margin": 0.02, "passed": true}},
+ "promoted_at": "...", "promoted_by": "ui|training-callback", "retired_at": null,
+ "history": [{"at": "...", "event": "registered|gate_passed|gate_failed|promoted|retired|rolled_back", "note": "..."}]}
+```
+
+**Required code changes (pinned to today's lines):**
+
+1. `_norm_settings` L132-135: preserve `seq/status/created_at/data_files/provenance/eval/history` when rebuilding version dicts (default `status="active"`, `seq`= list index for legacy entries). Without this the fields are stripped on every load.
+2. `_norm_settings` L136-138 and `save_ui_settings` L207-211: replace "first matching-base version" auto-selection with "the version whose `status == "active` and base matches" (else None). Without this the fallback auto-select can silently promote the wrong version.
+3. `POST /api/settings/update` L994-1009: delete L1007 (`t["selected"] = version`); register with `status="staged"`.
+4. New `POST /api/settings/evaluate` (task, version) - runs the gate(s) for the task family, writes `eval` + history. May be called by the external training job as a callback (retraining is already assumed external) or manually.
+5. New `POST /api/settings/promote` (task, version, note) - flips statuses, sets `promoted_at/by`, updates `selected`; old active becomes `retired`. Rollback = promote an older version (one click; reuses the index.html L843-853 select flow once it maps to the new endpoint).
+6. `selected` remains in the file (UI compatibility) but is derived from the `active` invariant - the UI's version dropdown filters to `status in (active, candidate, retired)` with labels.
+
+**Fallback contract (agent 5's, adopted verbatim):** `selected == None` (e.g. base-model switch orphaning all versions - the *current live state* of `win_ratio`) means `_3_Prediction` degrades to the heuristic baseline (historical shrunk win rate from the outcome store, or plain min/mid/max scenarios), visibly labeled in the UI.
+
+**Data-schema alignment with agent 5 (merged, one schema set):**
+
+- Source of truth per tender: `tenders/<id>/outcome.json` per agent 5's schema, **extended** with round-1's fields: `loss_reason` (enum), `loss_detail`, `models_used` (version ids behind the bid + factors snapshot), `postmortem` block. Agent 5's `price_position_pct` (Decimal, half-up 2dp) is the stored field; round-1's `bid_ratio` becomes a *derived* feature (= `(100 + price_position_pct)/100`) fed to Friedman-style win models. `win_estimate_pct` captured at submission (agent 5) kept - needed for backtest/calibration.
+- Competitor observations: raw = `outcome.competitors[]`; agent 5's `observations/competitor_<slug>.json` rolling stats are the derived aggregate. Round-1's separate append-only `competitor_observation` record is **dropped** as redundant.
+- Derived global stores (recomputed by a step script, never appended by hand): `output/index/tender_outcome.jsonl` (round-1's index, now derived from the per-tender files) and `output/segments/<segment>.json` Beta posteriors (R2.4 formulas: `(alpha, beta, n_obs)` with the pseudo-count floor documented in `settings.yaml`).
+- Training rows: agent 5's `uploads/lora_data/win_ratio_<ts>_auto.jsonl` format kept, plus `loss_reason` added to the features.
+- Reports: md + standalone HTML always; PDF via the extracted `report_painters.py` (verified painters: server.py L530/L674/L778, `Page` L370, palette L294-297) only when a PDF artifact is actually required; jinja2 deferred until there are >3 report types (start with stdlib f-string templates). Agent 5's `reports_index.json` record extended with `loss_reason` + `models_used`.
+
+### R2.7 Open items (for round 3 / implementation)
+
+1. Golden sets do not exist yet - curating ~50 examples per task (`input_processing`, `productivity_factors`) is the largest manual work item; the `validate.py` 22/22 pattern is the template.
+2. Brier backtest needs `win_estimate_pct` recorded at submission time - requires touching the `_3_Prediction`/submission UI, not just `_4`.
+3. `POST /api/settings/evaluate` on a machine without the trained adapter present: decide whether the eval runs where training happens (callback style) and only the *result* is POSTed.
+4. PH threshold/min_instances for the real error stream are guesses until ~20 error points exist; log the stream from day one so the detector can be tuned on real data.
+5. Date-collision ids remain in the live file; `seq` heals ordering going forward but the UI dropdown should render `seq + version` to disambiguate the existing `15:21`/`15:22` pair.
+6. SearxNG throttling: future rounds should space queries minutes apart or pre-register primary-source URLs; the engine suspension outlived this entire round.
+
+### R2.8 Round-2 reference verification
+
+- All round-1 URLs re-checked live: 17/19 HTTP 200; 403 (bot-wall, not dead): tandfonline.com/doi/abs/10.1080/01446193.2023.2181980 , dl.acm.org/doi/pdf/10.1145/3627673.3680107 .
+- New primary sources fetched and quoted above: arXiv 2502.07274 (Forget Forgetting), 2311.17601 (CL with LoRA), 2404.00228 (InfLoRA), 2505.15424 / 2507.19887 / 2610.02283 (gated/CLoRA/MuLoRA), 2606.00400 (dynamic replay mixing); https://riverml.xyz/dev/api/drift/ADWIN/ and /PageHinkley/ (params), https://raw.githubusercontent.com/online-ml/river/main/river/drift/adwin.py (Rust import) and /page_hinkley.py (127 lines); https://en.wikipedia.org/wiki/Conjugate_prior , /Empirical_Bayes_method , /Scoring_rule , /Brier_score ; https://research.google.com/pubs/the-ml-test-score-a-rubric-for-ml-production-readiness-and-technical-debt-reduction/ ; https://hamel.dev/blog/posts/evals/ .
+
+---
+
+## Round 3 - execution validation
+
+- **Date:** 2026-10-10 (round 3). **Mission:** turn the round-1/2 formulas into *executed* stdlib code with real outputs; finalize constants; re-check cross-module fit.
+- **Scripts (kept, stdlib only):** `/tmp/r3_beta_binomial.py`, `/tmp/r3_page_hinkley.py`, `/tmp/r3_promotion_gate.py`, `/tmp/r3_two_stage.py`; reference copy `/tmp/river_page_hinkley.py` (river main, fetched today).
+- **Search:** SearxNG checked twice (start + paced 20 s retry) - all general engines suspended both times, whole round; the one external source needed (river PH source) was fetched directly (200, 127 lines).
+
+### R3.1 (a) Beta-Binomial shrinkage with the MoM-trap fix - EXECUTED
+
+```python
+PRIOR_STRENGTH_DEFAULT = 10.0   # when MoM unusable (<=0 / non-finite)
+PRIOR_STRENGTH_FLOOR   = 5.0    # clamp for a positive MoM estimate
+PRIOR_STRENGTH_CAP     = 30.0
+
+def mom_prior(rates):                      # MoM on segment rates
+    m = sum(rates) / len(rates)
+    v = sum((r - m) ** 2 for r in rates) / len(rates)
+    return m, (m * (1 - m) / v - 1.0 if v > 0 else float("inf"))
+
+def floored_prior(m, strength):            # the fix
+    s = (PRIOR_STRENGTH_DEFAULT
+         if strength <= 0 or strength != strength or strength == float("inf")
+         else min(max(strength, PRIOR_STRENGTH_FLOOR), PRIOR_STRENGTH_CAP))
+    return m * s, (1 - m) * s              # (alpha0, beta0)
+
+def cri90(a, b, draws=200_000, seed=...):  # stdlib 90% CrI
+    xs = sorted(random.Random(seed).betavariate(a, b) for _ in range(draws))
+    return xs[int(0.05 * draws)], xs[int(0.95 * draws)]
+```
+
+Executed (priors around pooled global rate 0.30 = 9/30 from the 6 toy segments):
+
+| w/n | raw | S=5 mean + 90% CrI | S=10 mean + 90% CrI | S=30 |
+|---|---|---|---|---|
+| 1/1 | 1.000 | 0.417 [0.129, 0.738] | 0.364 [0.150, 0.605] | 0.323 |
+| 3/5 | 0.600 | 0.450 [0.209, 0.702] | 0.400 [0.206, 0.610] | 0.343 |
+| 12/20 | 0.600 | 0.540 [0.377, 0.700] | 0.500 [0.352, 0.648] | 0.420 |
+| 60/100 | 0.600 | 0.586 [0.506, 0.664] | 0.573 [0.495, 0.649] | 0.531 |
+
+Findings, sharper than round 2: (1) the 6 segments give `alpha0+beta0 = 0.4682`; unfloored, 1/1 shrinks only to 0.819 - vacuous. (2) **The trap is structural:** segment rates that are all 0/1 (`[1/1, 0/1]`, 8 balanced binaries) give `v = m(1-m)` exactly, so `common = 0.000000` *exactly* -> Beta(0,0) improper, zero shrinkage, raw MLE. The 1-3-observation segments that most need shrinkage are the ones that trigger it; the floor is mandatory. (3) The shrunk mean moves up to 0.12 (12/20) across S in [5, 30] - the constant materially changes the served number; keep it in `settings.yaml`, quarterly review. (4) Prior weight `S/(S+n)`: S=10 still carries 33% at n=20 - strong shrinkage through a segment's first ~20 tenders, by design.
+
+### R3.2 (b) Page-Hinkley drift detector - EXECUTED
+
+Faithful minimal port of river's 127-line detector (~40 lines stdlib; semantics confirmed against today's fetched source: dual CUSUM sums with -delta/+delta, running mean, reset after each alarm, test only once `n >= min_instances`):
+
+```python
+class PageHinkley:
+    def __init__(self, min_instances=10, delta=0.005, threshold=8.0, alpha=1 - 0.0001):
+        ...  # params; _reset(): _n=0, _x_mean=0.0, _sum_inc=0.0, _sum_dec=0.0,
+             # _min_inc=+inf, _max_dec=-inf, drift_detected=False
+    def update(self, x):
+        if self.drift_detected: self._reset()
+        self._n += 1
+        self._x_mean += (x - self._x_mean) / self._n
+        dev = x - self._x_mean
+        self._sum_inc = self.alpha * self._sum_inc + dev - self.delta
+        self._sum_dec = self.alpha * self._sum_dec + dev + self.delta
+        self._min_inc = min(self._min_inc, self._sum_inc)
+        self._max_dec = max(self._max_dec, self._sum_dec)
+        self.drift_detected = (self._n >= self.min_instances and
+            (self._sum_inc - self._min_inc > self.threshold or
+             self._max_dec - self._sum_dec > self.threshold))
+```
+
+Stream = the _4 use case: champion predicts `p_pred=0.55` fixed; true win rate steps `0.55 -> 0.25` at t=50 (120 pts); per-tender error `1-p_pred` if lost / `-p_pred` if won (mean 0 -> +0.30). Seeds 7/11/42 + 10-seed robustness. Decisive rows:
+
+| config | detection delay (3 seeds) | false alarms |
+|---|---|---|
+| river defaults (mi=30, thr=50) | **NOT DETECTED in 120 pts, all 3 seeds** | 0 (deaf, not clean) |
+| mi=10, thr=5, raw | 12, 13 | 2 pre-change |
+| **mi=10, thr=8, raw** | **8, 42, 22** | **0** |
+| mi=10, thr=8, rolling-5 smoothed | 9, 45, 26 | 0 |
+
+- 10-seed robustness (thr=8, raw): detected 10/10, delays median **12.5** / mean 19.9; stationary 120-pt controls 0 alarms.
+- **False-alarm horizon (the surprise):** stationary 1000-pt runs give 42 alarms / 8000 pts at thr=8 (**~1/190 pts**), 30/8000 at thr=10 (~1/267), 17/8000 at thr=12 (~1/471). Short windows hide this - the alarm rate is a *horizon* property.
+- Delay vs thr (10 seeds): 30pp collapse median 12.5/25.5/39.0 at thr 8/10/12; 15pp drift median 34/68.5/100.5 - small drifts are only marginally distinguishable from noise at any threshold.
+- `min_instances` irrelevant at thr>=6 (identical delays at mi 8/10/15/30) - threshold dominates; mi=10 stays as a warm-up gate. Smoothing buys nothing (median 26 vs 12.5) - **feed the RAW error stream**.
+- **Consequence:** a PH alarm triggers a calibration review (rolling calibration plot), NEVER an automatic flip - at ~1 false alarm per ~190 weekly points (~once per 3.6 years), review-cost FPs are acceptable, switch-cost ones are not. Round-2's "min_instances 8-10" fix was aimed at the wrong parameter.
+
+### R3.3 (c) Promotion-gate math - EXECUTED
+
+```python
+def gate_golden(active, new, n, floor_breaches=0):
+    if floor_breaches: return False, "example below 0.50"
+    if n >= 50: return new >= active - 0.02, "margin tier"   # non-inferiority
+    return new >= active, "strict tier"                        # n < 50
+
+def gate_backtest(brier_a, brier_c, n):
+    return n >= 10 and brier_c <= brier_a + 0.02, "..."
+
+def posterior_better(w_a, n_a, w_c, n_c, prior=10.0, draws=100_000):
+    # P(challenger win-rate > active): seeded betavariate draws,
+    # symmetric Beta(prior/2, prior/2) priors on both sides
+```
+
+Exact flip points from the run:
+
+- **G1 golden (active 0.87):** n=52 PASS boundary **challenger >= 0.8500** (0.8500 passes, 0.8499 fails); the same 0.86 at n=40 **fails** (strict tier needs >= 0.87); any example < 0.50 fails regardless (0.95 mean + 1 breach -> FAIL). Round 2's "n<30 strict" left 30-49 undefined -> **2 tiers: n>=50 margin, n<50 strict**.
+- **G2 backtest (14 synthetic decided tenders):** active Brier **0.1670**, near-calibrated challenger **0.1694** -> **PASS** (boundary <= **0.1870**); underconfident challenger 0.2170 -> FAIL; the passing challenger at n=9 -> FAIL (min-n first). The pass-while-slightly-worse case IS the non-inferiority semantics - 0.002 Brier at n=14 is noise; strict improvement would reject statistically-equal challengers (R3.7).
+- **G3 auto-promote (active 12/30 = 40%):** posterior crosses 0.90 at **challenger 18/30 (60%)** (17/30 -> 0.871, 18/30 -> 0.913): auto-flip demands +20pp at n=30 - effectively never fires, the intended conservatism. n>=30 also blocks small-n illusions (7/10 vs 12/30 already posts 0.904). Decision table: G1&G2 + n>=30 + post>0.90 -> auto-promote; G1&G2 pass otherwise -> candidate, human confirms; any fail -> rejected, scores kept in `eval`.
+
+### R3.4 (d) Two-stage loss decomposition - EXECUTED on the live calc.json
+
+Real inputs (`src/web_ui/tenders/t20261010_143121_4c08/calc.json`, `OBERGLATT_LUEFTUNG_DEMO`; `t20261010_135110_3ddb` has byte-identical cost numbers - same dev fixture): `cost_baseline_chf = 557228.55`, indicative `589659.84` (= baseline/(1-5.5%)); scenario bids via the repo's own ceil-1000 rule: **2.5% -> 572000, 4.0% -> 581000, 6.5% -> 596000**; zero-margin floor 558000. Decimal + ROUND_HALF_UP per house convention. Decomposition (submitted = Target 581000; margin stage = `bid - baseline`; cost stage = `baseline - winner`):
+
+| winner | gap G | margin stage | cost stage | verdict |
+|---|---|---|---|---|
+| 541200 (agent-5 example) | 39800 | 23771.45 (59.7%) | **16028.55 (40.3%) STRUCTURAL** | even at 0% margin we lose - costing/quote risk, not a slider decision |
+| 565000 | 16000 | 23771.45 | -7771.45 bridgeable | pricing loss, but winning margin **1.4% < cheapest preset** (2.5%): no preset wins |
+| 573000 | 8000 | 23771.45 | -15771.45 bridgeable | pricing loss; **Aggressive would have WON** (winning margin 2.8%) |
+
+**Material correction the run forced:** the live tender's supplier-package share is **6/22 positions = CHF 271261.31 = 72.78% of positions direct cost** (plus contingency 6140.16) - agent 5's round-1 training-row example (`supplier_share_direct_cost: 0.22`) is 3.3x off the live value; the demo data is far more quote-risk-dominated than assumed. Quote-risk coverage of scenario A's structural gap: contingency 6140.16 + 10% budget-rate error on supplier cost 27126.13 = 33266.29 = **207% of the 16028.55 gap** - budget-rate optimism alone could more than explain the whole cost stage. `step2_why.py` should print this coverage ratio (capped at 100%).
+
+### R3.5 Finalized constants (paste-ready for src/_4)
+
+```python
+# Beta-Binomial shrinkage (segment win rates)          [R3.1]
+PRIOR_STRENGTH_DEFAULT = 10.0    # MoM <= 0 / non-finite -> this
+PRIOR_STRENGTH_FLOOR   = 5.0     # positive MoM clamped up to this
+PRIOR_STRENGTH_CAP     = 30.0    # and down to this; quarterly review
+CRI_DRAWS              = 200_000 # seeded random.betavariate, 90% CrI
+
+# Page-Hinkley on the RAW per-tender error stream       [R3.2]
+PH_MIN_INSTANCES = 10           # warm-up only; threshold is the real knob
+PH_DELTA         = 0.005        # river default, kept
+PH_THRESHOLD     = 8.0          # 30pp collapse: median 12.5 pts; FA ~1/190 pts
+PH_ALPHA         = 0.9999       # river default, kept
+# alarm -> calibration review ONLY, never an automatic version flip
+
+# Promotion gates                                       [R3.3]
+GATE_GOLDEN_MIN_N         = 50  # n >= 50: margin tier; n < 50: strict >= champion
+GATE_GOLDEN_MARGIN        = 0.02
+GATE_GOLDEN_EXAMPLE_FLOOR = 0.50   # hard per-example floor
+GATE_BACKTEST_MIN_N       = 10     # decided tenders, out-of-time
+GATE_BRIER_MARGIN         = 0.02   # challenger may be up to this much worse
+AUTO_PROMOTE_MIN_N        = 30     # + posterior > 0.90 => auto-flip eligible
+AUTO_PROMOTE_POSTERIOR    = 0.90   # needs ~ +20pp win-rate edge at n=30
+MC_DRAWS                  = 100_000
+```
+
+(Decomposition needs no new constants: `cost_baseline_chf`, margins, `commercial.round_to_chf` come from existing artifacts; winning margin `= (1 - baseline/winner)*100`.)
+
+### R3.6 Surprises / corrections the executions forced
+
+1. MoM degeneracy is exact (all-binary rates -> strength identically 0); `floored_prior` must branch on strength <= 0 (default 10), not just clamp.
+2. River PH defaults are provably deaf at our volume; `min_instances` - round 2's recommended fix - does nothing; **threshold 8.0** is the fix.
+3. PH false alarms are horizon-dependent (invisible in 120-pt windows, ~1/190 pts at thr=8 over 1000 pts) - justify the constant against the long-run rate; keep the alarm action cheap (review, not switch).
+4. G1 round-2 tiering left n=30-49 undefined -> 2 tiers (n>=50 margin / else strict); the discontinuity (0.86 passes at n=52, fails at n=40) is acceptable because golden-set size is fixed per task.
+5. G3 auto-promote needs +20pp at n=30 - effectively dead code by construction; the UI must not advertise automatic promotion as the normal path (human confirm is).
+6. Live supplier-quote share is 0.73, not agent 5's illustrative 0.22 - regenerate step2 features/fixtures from real `calc.json` values.
+
+### R3.7 Cross-module fit with _3_Prediction (context_agent_3 round 2) - re-checked
+
+- **Fits cleanly:** agent 3's "predict.py treats `selected: null` as heuristic fallback" is the converged fallback contract (still today's live `win_ratio` state); staleness payload `model {kind, version, task}` keeps working with `version` = the *active* version (candidates never served); script (d) cross-validates agent 3's ceil-1000 bid rule on the live baseline (572000/581000/596000); both sides read `project_cost.cost_baseline_chf` - one baseline, two consumers, no conflict.
+- **One conflict to fix in agent 3's text:** its round-1 §6 / round-2 §D3 gate - selectable "only if held-out Brier **improves**" - must become the **non-inferiority** rule: challenger 0.1694 vs active 0.1670 fails "improves" but passes `<= active+0.02`; 0.0024 at n=14 is noise, and strict improvement would freeze the champion through base-model churn. Agent 3's round 3 should adopt `GATE_BRIER_MARGIN = 0.02` / `GATE_BACKTEST_MIN_N = 10` verbatim so _3's candidate filter and _4's registry gate cannot disagree.
+- **Beta-posterior wiring:** agent 3's prompt line "prior wins 2/5 vs this client" should consume _4's `output/segments/<segment>.json` `(alpha, beta, n_obs)` - render the shrunk mean (2/5 -> 0.400 at global 0.30, S=10) + 90% CrI, not the raw fraction.
+
+### R3.8 Round-3 sources
+
+- SearxNG `http://127.0.0.1:8888`: two JSON-API checks, all general engines suspended both times - three rounds in a row; pre-register primary URLs or use direct fetches.
+- Direct fetch: https://raw.githubusercontent.com/online-ml/river/main/river/drift/page_hinkley.py (200, 127 lines - port basis).
+- All numbers in R3.1-R3.4 are outputs of the four /tmp scripts, run today against the live artifacts (`t20261010_143121_4c08/calc.json`, `materials/project_parameters.json`).
