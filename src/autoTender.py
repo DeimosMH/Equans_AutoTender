@@ -15,6 +15,9 @@ PRED = BASE/'_3_Prediction'
 sys.path.insert(0, str(PRED))
 from dataset import TASKS
 from jobs import JobStore
+sys.path.insert(0, str(BASE/"_4_RecursiveImprovement"))
+import core as feedback_core
+import monitoring as feedback_monitoring
 
 
 def main():
@@ -31,7 +34,33 @@ def main():
     prepare.add_argument('--uploads', type=Path, default=BASE/'web_ui/uploads/lora_data')
     prepare.add_argument('--jobs', type=Path, default=BASE/'_3_Prediction/output/cli_jobs')
     prepare.add_argument('--exclude-existing', action='store_true')
+    feedback = commands.add_parser('feedback', help='Record or analyze tender outcomes')
+    feedback.add_argument('action', choices=('submission','outcome','analyze','gather','export','monitor','evaluate'))
+    feedback.add_argument('--folder', type=Path, default=BASE/'web_ui/tenders')
+    feedback.add_argument('--data', type=Path, help='JSON action payload or candidate records list')
+    feedback.add_argument('--uploads', type=Path, default=BASE/'web_ui/uploads/lora_data')
     args = parser.parse_args()
+    if args.command == 'feedback':
+        body = json.loads(args.data.read_text()) if args.data else {}
+        folder = args.folder.resolve()
+        if args.action == 'submission':
+            from predict import enrich
+            params = json.loads((BASE/'_2_Calculator/data/project_parameters.json').read_text())
+            calc = enrich(json.loads((folder/'calc.json').read_text()),params)
+            result = feedback_core.capture_submission(folder,calc,params,body)
+        elif args.action == 'outcome':
+            result = feedback_core.record_outcome(folder,body)
+            feedback_core.analyze(folder)
+            feedback_core.export_feedback(folder,args.uploads)
+        elif args.action == 'gather':
+            result = feedback_core.gather_evidence(folder,body.get('urls',[]))
+            feedback_core.analyze(folder)
+        elif args.action == 'export': result = feedback_core.export_feedback(folder,args.uploads)
+        elif args.action == 'monitor': result = feedback_monitoring.monitor_tenders(folder)
+        elif args.action == 'evaluate': result = feedback_monitoring.evaluate_candidate(body if isinstance(body,list) else body.get('records',[]))
+        else: result = feedback_core.analyze(folder)
+        print(json.dumps(result,indent=2))
+        return 0
     if args.command == 'calculate':
         output = args.output.resolve()
         output.parent.mkdir(parents=True, exist_ok=True)

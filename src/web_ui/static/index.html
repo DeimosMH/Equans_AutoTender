@@ -573,6 +573,50 @@ function renderMain() {
         <tbody></tbody>
       </table>
       <p id="tableMsg" style="color:var(--muted);font-size:12px;margin-bottom:0"></p>
+    </section>
+    <section class="card" id="feedbackPanel">
+      <h2>Bid outcome and learning</h2>
+      <p class="hint">Record a submission before its outcome to preserve the bid, saved calculation and prediction. Public notices provide evidence; they cannot confirm whether we participated.</p>
+      <div id="feedbackState" class="hint">Loading feedback…</div>
+      <div class="upload-row">
+        <label>Submitted bid CHF <input id="feedbackBid" type="number" min="0" step="0.01" placeholder="From saved baseline and selected margin"></label>
+        <button id="recordSubmission">Record submission</button>
+      </div>
+      <div class="upload-row">
+        <label>Outcome <select id="feedbackOutcome"><option value="lost">Lost</option><option value="won">Won</option><option value="withdrawn">Withdrawn</option></select></label>
+        <label>Observed at <input id="feedbackObserved" type="datetime-local"></label>
+        <label><input id="feedbackVerified" type="checkbox"> Confirmed own bid outcome</label>
+      </div>
+      <div class="upload-row">
+        <label>Evidence reference <input id="feedbackEvidence" type="text" placeholder="Debrief, award letter or internal reference"></label>
+        <label>Comparable award CHF <input id="feedbackAward" type="number" min="0" step="0.01"></label>
+        <label><input id="feedbackComparable" type="checkbox"> Same scope, currency and VAT basis</label>
+      </div>
+      <details><summary>Verified competitor evidence</summary>
+        <label>Winner <input id="feedbackWinner" type="text"></label>
+        <label>Competitors JSON <textarea id="feedbackCompetitors" placeholder='[{"name":"Company","price_chf":100000,"currency":"CHF","comparable":true}]'></textarea></label>
+        <p class="hint">Only comparable CHF prices enter descriptive competitor summaries.</p>
+      </details>
+      <div class="upload-row">
+        <label>Reason codes <input id="feedbackReasons" type="text" placeholder="price, technical_score, references, capacity, other"></label>
+        <label><input id="feedbackReasonsConfirmed" type="checkbox"> Reasons confirmed by evidence</label>
+        <label>Debrief notes <textarea id="feedbackNarrative" maxlength="10000"></textarea></label>
+        <button id="recordOutcome">Save outcome and prepare feedback</button>
+      </div>
+      <div class="upload-row">
+        <input id="feedbackLinks" type="text" placeholder="HTTPS simap project URL">
+        <button id="gatherOutcomeEvidence">Gather public evidence</button>
+        <button id="refreshFeedback">Refresh analysis</button>
+      </div>
+      <div id="feedbackActions"></div><pre id="feedbackAnalysis" style="white-space:pre-wrap"></pre>
+      <details><summary>Record measured productivity</summary>
+        <p class="hint">Use verified measurements. Recording them prepares training data; it does not replace active calculation factors.</p>
+        <label>Factors JSON <textarea id="measuredFactors" placeholder='{"site_efficiency":0.9}'></textarea></label>
+        <label>Measurement reference <input id="measurementReference" placeholder="Approved timesheet or measurement record"></label>
+        <label><input id="measurementVerified" type="checkbox"> Verified measurement</label>
+        <button id="recordMeasurement">Save measurement</button>
+      </details>
+      <span id="feedbackMessage" class="hint"></span>
     </section>`;
 
   const tb = $("posTable").querySelector("tbody");
@@ -622,6 +666,7 @@ function renderMain() {
   applySort();   // keep the chosen ordering after save/reload
   updateSaveState();
   recompute();
+  setupFeedback();
 }
 
 /* live recompute - mirrors step4_project.py and the PDF report; labour comes
@@ -672,6 +717,82 @@ function updateSaveState() {
   $("tableMsg").textContent = hasEdits ? "unsaved manual edits - press Save changes" : "";
 }
 
+async function setupFeedback() {
+  const tender = current;
+  let expectedRevision = 0, initialized = false;
+  const msg = () => $("feedbackMessage");
+  const localNow = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
+  $("feedbackObserved").value = localNow;
+  async function refresh() {
+    const response = await fetch(`/api/tenders/${tender}/feedback`);
+    const data = await response.json();
+    if (current !== tender || !$("feedbackPanel")) return;
+    if (!response.ok) throw new Error(data.error || "Cannot load feedback");
+    $("feedbackState").textContent = data.submission ? "Submission recorded; its calculation and prediction are preserved." : "Submission has not been recorded.";
+    $("recordSubmission").dataset.frozen = data.submission ? "true" : "false";
+    $("recordSubmission").disabled = !!data.submission;
+    $("recordOutcome").disabled = !data.submission;
+    expectedRevision = data.outcome?.revision || 0;
+    if (!initialized && data.outcome) {
+      const out = data.outcome;
+      $("feedbackOutcome").value = out.outcome;
+      $("feedbackVerified").checked = out.verified;
+      $("feedbackEvidence").value = out.evidence_reference || "";
+      $("feedbackReasons").value = (out.reason_codes || []).join(", ");
+      $("feedbackReasonsConfirmed").checked = out.reasons_confirmed;
+      $("feedbackNarrative").value = out.narrative || "";
+      $("feedbackAward").value = out.award_price_chf || "";
+      $("feedbackComparable").checked = out.award_price_comparable;
+      $("feedbackWinner").value = out.winner || "";
+      $("feedbackCompetitors").value = JSON.stringify(out.competitors || []);
+      const observed = new Date(out.observed_at);
+      $("feedbackObserved").value = new Date(observed.getTime()-observed.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    }
+    initialized = true;
+    $("feedbackAnalysis").textContent = data.analysis ? JSON.stringify(data.analysis, null, 2) : "No analysis yet.";
+    $("feedbackActions").innerHTML = data.submission ? ["md","html","pdf"].map(format =>
+      `<a style="margin-right:16px" href="/api/tenders/${tender}/postmortem?format=${format}">Download ${format.toUpperCase()} report</a>`).join("") : "";
+  }
+  async function post(action, body) {
+    const response = await fetch(`/api/tenders/${tender}/${action}`, {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Feedback action failed");
+    if (current !== tender || !$("feedbackPanel")) return;
+    msg().textContent = "Saved. " + JSON.stringify(data.result);
+    await refresh();
+  }
+  function handler(button, work) {
+    $(button).addEventListener("click", async event => {
+      event.target.disabled = true;
+      try { await work(); } catch (error) { if (msg()) msg().textContent = error.message; }
+      finally { if (current === tender && $(button)) $(button).disabled = button === "recordSubmission" && $(button).dataset.frozen === "true"; }
+    });
+  }
+  handler("recordSubmission", async () => {
+    if (dirtyFields.size || Number($("overhead").value) !== Number(params.commercial.overhead_pct) ||
+        Number($("waste").value) !== Number(params.allowances.material_waste_pct))
+      throw new Error("Save position changes and restore default overhead/waste before capturing the saved calculation.");
+    const bid = $("feedbackBid").value;
+    await post("submission", {submitted_at:new Date().toISOString(), margin_pct:Number($("margin").value),
+      ...(bid ? {bid_amount_chf:Number(bid)} : {})});
+    $("recordSubmission").disabled = true;
+  });
+  handler("recordOutcome", () => post("outcome", {
+    expected_revision:expectedRevision, outcome:$("feedbackOutcome").value, observed_at:$("feedbackObserved").value === localNow ? new Date().toISOString() : new Date($("feedbackObserved").value).toISOString(),
+    winner:$("feedbackWinner").value, competitors:JSON.parse($("feedbackCompetitors").value || "[]"),
+    verified:$("feedbackVerified").checked, evidence_reference:$("feedbackEvidence").value,
+    reason_codes:$("feedbackReasons").value.split(",").map(s=>s.trim()).filter(Boolean),
+    reasons_confirmed:$("feedbackReasonsConfirmed").checked, narrative:$("feedbackNarrative").value,
+    ...( $("feedbackAward").value ? {award_price_chf:Number($("feedbackAward").value), award_price_comparable:$("feedbackComparable").checked} : {})}));
+  handler("gatherOutcomeEvidence", () => post("gather-evidence", {urls:$("feedbackLinks").value.split(/\s+/).filter(Boolean)}));
+  handler("refreshFeedback", refresh);
+  handler("recordMeasurement", () => post("productivity-feedback", {
+    target:JSON.parse($("measuredFactors").value), measurement_reference:$("measurementReference").value,
+    verified:$("measurementVerified").checked, input:{project_type:calc.project?.name || "ventilation"}}));
+  try { await refresh(); } catch (error) { if (msg()) msg().textContent=error.message; }
+}
+
 /* ------------------------------------------------ settings (models) */
 
 const TASKS = [
@@ -705,6 +826,15 @@ function renderSettings() {
   if (!uiSettings) { loadSettings(); return; }
 
   $("content").innerHTML = `
+    <section class="card">
+<h2>Feedback monitoring</h2><button id="feedbackMonitorRefresh">Refresh monitoring</button><pre id="feedbackMonitor" style="white-space:pre-wrap">No verified outcome history loaded.</pre>
+    </section>
+    <section class="card">
+      <h2>Candidate evaluation</h2>
+      <p class="hint">Upload paired held-out predictions with verified provenance. Evaluation recommends review; it does not activate an adapter.</p>
+      <input type="file" id="candidateScores" accept=".json"><button id="evaluateCandidate">Evaluate candidate</button>
+      <pre id="candidateResult" style="white-space:pre-wrap"></pre>
+    </section>
     <section class="card">
       <h2>LoRA per task</h2>
       <div id="verRows"></div>
@@ -747,6 +877,25 @@ function renderSettings() {
       <span id="settingsMsg" class="hint"></span>
     </div>`;
 
+  $("evaluateCandidate").addEventListener("click", async () => {
+    try {
+      const file = $("candidateScores").files[0];
+      if (!file) throw new Error("Choose a JSON file containing evaluation records.");
+      const payload = JSON.parse(await file.text());
+      const response = await fetch("/api/feedback/evaluate", {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({records:Array.isArray(payload)?payload:payload.records})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Evaluation failed");
+      if ($("candidateResult")) $("candidateResult").textContent=JSON.stringify(data,null,2);
+    } catch (error) { if ($("candidateResult")) $("candidateResult").textContent=error.message; }
+  });
+  $("feedbackMonitorRefresh").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/feedback/monitoring"), data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Monitoring unavailable");
+      if ($("feedbackMonitor")) $("feedbackMonitor").textContent = JSON.stringify(data,null,2);
+    } catch (error) { if ($("feedbackMonitor")) $("feedbackMonitor").textContent=error.message; }
+  });
   $("verRows").innerHTML = TASKS.map(t => `
     <div class="setrow">
       <b>${t.label}</b>
