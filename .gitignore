@@ -2,3 +2,9 @@ __pycache__/
 src/web_ui/uploads/
 src/web_ui/tenders/
 src/web_ui/ui_settings.json
+src/_3_Prediction/data/raw/
+src/_3_Prediction/data/*.jsonl
+src/_3_Prediction/data/*manifest*.json
+src/_3_Prediction/models/
+src/_3_Prediction/output/
+src/web_ui/training_jobs/

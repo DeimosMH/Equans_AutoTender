@@ -1,0 +1,6 @@
+# Optional: isolated local training environment; not required by the web UI.
+# Resolve and lock tested versions for your chosen model and GPU before training.
+torch>=2.2,<3
+transformers>=4.46,<5
+peft>=0.14,<1
+accelerate>=1,<2

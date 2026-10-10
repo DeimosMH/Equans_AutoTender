@@ -32,12 +32,21 @@ TENDERS = BASE / "tenders"
 UPLOADS = BASE / "uploads"
 UI_SETTINGS = BASE / "ui_settings.json"
 INDEX = BASE / "static" / "index.html"
+PREDICTION_DIR = BASE.parent / "_3_Prediction"
+sys.path.insert(0, str(PREDICTION_DIR))
+from dataset import read_upload
+from jobs import JobStore
+PREPARATION_JOBS = JobStore(BASE / "training_jobs")
 
 # reuse the calculator's loaders/rounding so paths and maths stay in one place
 _spec = importlib.util.spec_from_file_location("calc_common", CALC_DIR / "common.py")
 calc_common = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(calc_common)
 D, r2 = calc_common.D, calc_common.r2
+
+_pred_spec = importlib.util.spec_from_file_location("bid_prediction", BASE.parent / "_3_Prediction" / "predict.py")
+prediction = importlib.util.module_from_spec(_pred_spec)
+_pred_spec.loader.exec_module(prediction)
 
 REQUIRED_CSV_COLUMNS = ["lv_id", "source_page", "quantity", "unit", "suggested_product_id"]
 EDITABLE_FIELDS = ("quantity", "net_unit_cost_chf", "labour_cost_chf")
@@ -104,10 +113,10 @@ AI_DEMO_FACTORS = {  # demo suggestions until the productivity LoRA connects
 DEFAULT_SETTINGS = {
     "base_model": "GLM-4.6",
     "tasks": {
-        "input_processing": {"versions": [{"version": "2026-09-12", "base": "GLM-4.6"}],
+        "input_processing": {"versions": [],
                              "selected": None, "links": ""},
         "productivity_factors": {"versions": [], "selected": None, "links": ""},
-        "win_ratio": {"versions": [{"version": "2026-10-02", "base": "GLM-4.6"}],
+        "win_ratio": {"versions": [],
                       "selected": None, "links": ""},
     },
     "advanced": {"models_dir": "/data/models", "loras_dir": "/data/loras",
@@ -130,12 +139,13 @@ def _norm_settings(data) -> dict:
         for k in TASK_KEYS:
             t = tasks_in.get(k) or {}
             versions = [{"version": str(v.get("version", "")).strip()[:40],
-                         "base": str(v.get("base") or base).strip()[:80]}
+                         "base": str(v.get("base") or base).strip()[:80],
+                         "status": "unverified", "adapter_id": str(v.get("adapter_id", ""))[:200]}
                         for v in t.get("versions") or []
                         if str(v.get("version", "")).strip()]
             selected = str(t.get("selected") or "").strip()[:40]
-            if not any(v["version"] == selected and v["base"] == base for v in versions):
-                selected = next((v["version"] for v in versions if v["base"] == base), "")
+            if not any(v["version"] == selected and v["base"] == base and v.get("status") == "evaluated" for v in versions):
+                selected = next((v["version"] for v in versions if v["base"] == base and v.get("status") == "evaluated"), "")
             tasks[k] = {"versions": versions, "selected": selected or None,
                         "links": str(t.get("links", ""))[:2000]}
     else:
@@ -148,10 +158,10 @@ def _norm_settings(data) -> dict:
                  else "win_ratio")
             tasks[k]["versions"].append(
                 {"version": time.strftime("%Y-%m-%d"),
-                 "base": str(m.get("base_model") or base).strip()[:80]})
+                 "base": str(m.get("base_model") or base).strip()[:80], "status": "unverified"})
         for t in tasks.values():
             t["selected"] = next((v["version"] for v in t["versions"]
-                                  if v["base"] == base), None)
+                                  if v["base"] == base and v.get("status") == "evaluated"), None)
 
     base_factors = calc_common.load_params()["productivity_factors"]
 
@@ -206,9 +216,9 @@ def save_ui_settings(data: dict) -> dict:
                 settings["tasks"][k]["versions"] = old["tasks"][k]["versions"]
             sel, base = settings["tasks"][k]["selected"], settings["base_model"]
             vers = settings["tasks"][k]["versions"]
-            if not any(v["version"] == sel and v["base"] == base for v in vers):
+            if not any(v["version"] == sel and v["base"] == base and v.get("status") == "evaluated" for v in vers):
                 settings["tasks"][k]["selected"] = next(
-                    (v["version"] for v in vers if v["base"] == base), None)
+                    (v["version"] for v in vers if v["base"] == base and v.get("status") == "evaluated"), None)
     UI_SETTINGS.write_text(json.dumps(settings, indent=2) + "\n")
     settings["base_models"] = BASE_MODELS
     return settings
@@ -224,6 +234,8 @@ def run_steps(calc_out: Path, scripts: list, positions_csv: Path | None = None,
                            cwd=CALC_DIR, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             raise RuntimeError(f"{script} failed:\n{r.stderr.strip()[-400:]}")
+    result = prediction.enrich(json.loads(calc_out.read_text()), calc_common.load_params())
+    calc_out.write_text(json.dumps(result, indent=2) + "\n")
     return r.stdout.strip()
 
 
@@ -924,8 +936,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, INDEX.read_bytes(), "text/html; charset=utf-8")
             elif parts[:2] == ["api", "tenders"] and len(parts) == 2:
                 self._json(200, list_tenders())
-            elif parts[:2] == ["api", "settings"]:
-                self._json(200, load_ui_settings())
+            elif parts[:3] == ["api", "settings", "dataset-format"] and len(parts) == 3:
+                self._send(200, (PREDICTION_DIR / "dataset_formats.md").read_bytes(), "text/plain; charset=utf-8")
+            elif parts[:3] == ["api", "settings", "jobs"]:
+                if len(parts) == 3:
+                    self._json(200, {"jobs": PREPARATION_JOBS.list()})
+                elif len(parts) == 4:
+                    self._json(200, PREPARATION_JOBS.get(parts[3]))
+                elif len(parts) == 6 and parts[4] == "artifacts":
+                    artifact = PREPARATION_JOBS.artifact(parts[3], parts[5])
+                    self._send(200, artifact.read_bytes(), "application/octet-stream",
+                               {"Content-Disposition": f'attachment; filename="{artifact.name}"'})
+                else:
+                    self._json(404, {"error": "unknown job path"})
+            elif parts[:2] == ["api", "settings"] and len(parts) == 2:
+                settings = load_ui_settings()
+                settings["preparation_jobs"] = PREPARATION_JOBS.list()
+                self._json(200, settings)
             elif parts[:2] == ["api", "tenders"] and len(parts) == 3:
                 tid = parts[2]
                 meta = load_meta(tid)
@@ -933,8 +960,18 @@ class Handler(BaseHTTPRequestHandler):
                     calc = json.loads(calc_path(tid).read_text())
                 except FileNotFoundError:
                     calc = None
+                if calc is not None:
+                    prediction.enrich(calc, calc_common.load_params())
                 self._json(200, {"meta": meta, "calc": calc,
                                  "params": calc_common.load_params()})
+            elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] == "wincurve":
+                tid = parts[2]
+                if not tid_valid(tid):
+                    self._json(400, {"error": "invalid tender id"})
+                    return
+                calc = json.loads(calc_path(tid).read_text())
+                baseline = parse_qs(url.query).get("baseline", [None])[0]
+                self._json(200, prediction.predict(calc, calc_common.load_params(), baseline))
             elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] == "download":
                 which = (parse_qs(url.query).get("file") or ["positions"])[0]
                 src = positions_path(parts[2]) if which == "positions" else TENDERS / parts[2] / "tender.pdf"
@@ -1000,13 +1037,9 @@ class Handler(BaseHTTPRequestHandler):
                 settings = load_ui_settings()
                 t = settings["tasks"][task]
                 t["links"] = str(body.get("links", ""))[:2000]
-                version = time.strftime("%Y-%m-%d")
-                if any(v["version"] == version for v in t["versions"]):
-                    version = time.strftime("%Y-%m-%d %H:%M")
-                t["versions"].append({"version": version, "base": settings["base_model"]})
-                t["selected"] = version
                 settings = save_ui_settings(settings)
-                self._json(200, {"ok": True, "version": version, "settings": settings})
+                job = PREPARATION_JOBS.start(task, settings["base_model"], t["links"], UPLOADS / "lora_data")
+                self._json(202, {"ok": True, "job": job, "settings": settings})
             elif parts[:2] == ["api", "settings"] and len(parts) == 3 and parts[2] == "upload-data":
                 q = parse_qs(url.query)
                 task = (q.get("task") or [""])[0]
@@ -1015,12 +1048,26 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 name = re.sub(r"[^A-Za-z0-9._-]", "_",
                               Path(unquote(q.get("name", ["data"])[0])).name) or "data"
+                if not name.lower().endswith(".jsonl"):
+                    self._json(400, {"error": "Upload UTF-8 JSONL using the task schema, not arbitrary documents."})
+                    return
                 length = int(self.headers.get("Content-Length", 0))
+                if length <= 0 or length > 20 * 1024 * 1024:
+                    self._json(400, {"error": "Upload must contain 1 byte to 20 MiB."})
+                    return
                 body = self.rfile.read(length)
+                try:
+                    records = read_upload(body, task)
+                except (ValueError, UnicodeError) as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
                 dest = UPLOADS / "lora_data"
                 dest.mkdir(parents=True, exist_ok=True)
-                (dest / f"{task}_{time.strftime('%Y%m%d_%H%M%S')}_{name}").write_bytes(body)
-                self._json(200, {"ok": True, "message": "data stored"})
+                stored_name = f"{task}_{time.time_ns()}_{name}"
+                temporary = dest / ("." + stored_name + ".tmp")
+                temporary.write_bytes(body)
+                temporary.replace(dest / stored_name)
+                self._json(200, {"ok": True, "message": "validated data stored", "records": len(records), "file": stored_name})
             elif parts[:2] == ["api", "settings"]:
                 settings = save_ui_settings(self._body_json())
                 self._json(200, {"ok": True, "settings": settings})

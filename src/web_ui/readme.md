@@ -86,10 +86,10 @@ removes the directory.
   model are listed - the rest stay stored but need retraining.
 - **Update LoRAs** - the same three rows, each with **Upload data**
   (training data file, stored under `uploads/lora_data/`), a
-  *provide links for tenders* field, and **Update**, which registers a new
-  dated version and selects it (retraining itself is assumed automatic once
-  the backend exists; endpoints `/api/settings/update` and
-  `/api/settings/upload-data`).
+  *provide links for tenders* field, and **Prepare dataset**, which creates a persisted asynchronous job, validates
+  JSONL task data, collects provided simap links plus bounded historical awards,
+  and exposes status and downloadable datasets/manifests. Preparation does not
+  register or activate a LoRA. The future training endpoint contract is pending.
 - **Advanced** - the base model (changing it changes which versions are
   available) and the model paths (models / loras / cache dirs).
 - **Productivity factors** - **Manual** (your values, defaults from
@@ -108,4 +108,10 @@ removes the directory.
   Python 3.13.
 - Browser/PDF recompute is indicative (JS floats); the authoritative numbers
   are computed by `_2_Calculator` with `Decimal` half-up rounding.
-- Bid scenarios / win probability belong to `_3_Prediction` and are absent here.
+- Bid scenarios and live win curves now come from `_3_Prediction`: they are
+  explicitly heuristic and uncalibrated until an evaluated predictor is integrated.
+- Full context and remaining boundaries: [PROJECT_CONTEXT.md](../../PROJECT_CONTEXT.md).
+- Task upload schemas: [dataset_formats.md](../_3_Prediction/dataset_formats.md).
+- Preparation jobs: `GET /api/settings/jobs`, `GET /api/settings/jobs/<id>` and
+  `GET /api/settings/jobs/<id>/artifacts/<filename>`.
+- Prediction: `GET /api/tenders/<id>/wincurve?baseline=<CHF>`.
