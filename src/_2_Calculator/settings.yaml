@@ -1,0 +1,24 @@
+# Input configuration for the _2_Calculator step scripts (requires pyyaml).
+#
+# mode:
+#   dev  - use the checked-in example files listed under files: below
+#   prod - take the NEWEST positions csv produced by _1_AI_InputProcessing
+#          (positions_dir + positions_pattern below, newest by file mtime).
+#          Catalog, productivity and parameters still come from files:
+#          because they are stable reference data, not per-tender output.
+#
+# The prod location below is our best guess from the _1_AI_InputProcessing
+# todo (merged file is called tender_lv_positions.csv); adjust it once that
+# module exists and its real output layout is known.
+
+mode: dev
+
+files:
+  positions: input/example_lv_positions.csv
+  catalog: input/catalog.csv
+  productivity: data/productivity.csv
+  parameters: data/project_parameters.json
+
+prod:
+  positions_dir: ../_1_AI_InputProcessing/output
+  positions_pattern: "tender_lv_positions*.csv"
