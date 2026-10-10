@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Equans AutoTender</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128194;</text></svg>">
+<style>
+  :root { --accent:#d9480f; --line:#e2e5ea; --muted:#6b7280; --bg:#f4f5f7;
+          --ink:#1f2328; --panel:#fff; --input-bg:#fff; --hover:#f7f8fa;
+          --active-bg:#fdf1eb; --badge-bg:#eef1f5; --badge-warn-bg:#fff4e5;
+          --badge-warn-ink:#9a3412; --dot:#c4c9d2; --del-ink:#a32323;
+          --del-bg:#fdeaea; --dirty-bg:#fffbea; --ok:#2f6b3a; --err:#a32323;
+          --st-ok-bg:#e9f6ec; --st-ok-ink:#22572c; --st-warn-bg:#fff4e5;
+          --st-warn-ink:#9a3412; --line-strong:#b6bcc7; }
+  body.dark { --accent:#f0632f; --line:#3a414b; --muted:#9aa1ab; --bg:#17191d;
+              --ink:#e8eaed; --panel:#1f2328; --input-bg:#262b31; --hover:#262b31;
+              --active-bg:#3a2418; --badge-bg:#2a2f36; --badge-warn-bg:#3d2a14;
+              --badge-warn-ink:#f0a35e; --dot:#4a515c; --del-ink:#ff8a8a;
+              --del-bg:#4a2020; --dirty-bg:#3a341c; --ok:#7ec98f; --err:#ff8a8a;
+              --st-ok-bg:#1f3a26; --st-ok-ink:#7ec98f; --st-warn-bg:#3d2a14;
+              --st-warn-ink:#f0a35e; --line-strong:#4a525e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink);
+         display:flex; height:100vh; overflow:hidden; }
+  button { padding:7px 14px; border:1px solid var(--line); border-radius:8px; background:var(--panel);
+           cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--line-strong); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  input { font:inherit; }
+
+  /* ---------- sidebar ---------- */
+  nav { width:240px; flex:0 0 240px; background:var(--panel); border-right:1px solid var(--line);
+        display:flex; flex-direction:column; }
+  .brand { padding:16px 18px 12px; font-weight:700; font-size:15px; }
+  .brand small { display:block; color:var(--muted); font-weight:400; font-size:11px; }
+  .navlabel { padding:8px 18px 4px; font-size:11px; letter-spacing:.08em; color:var(--muted); }
+  ul#tenderList { list-style:none; margin:0; padding:0; overflow-y:auto;
+                  flex:1 1 auto; min-height:0; }
+  ul#tenderList li { display:flex; align-items:center; gap:8px; padding:8px 12px 8px 18px;
+                     cursor:pointer; border-left:3px solid transparent; }
+  ul#tenderList li:hover { background:var(--hover); }
+  ul#tenderList li.active { background:var(--active-bg); border-left-color:var(--accent); }
+  ul#tenderList .tname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--dot); flex:0 0 8px; }
+  .dot.calculated { background:#3d9a50; }
+  .dot.pdf_stored { background:#4a7fc1; }
+  .del { border:0; background:none; color:var(--muted); padding:2px 6px; border-radius:6px; }
+  .del:hover { color:var(--del-ink); background:var(--del-bg); }
+  .addbox { padding:12px 14px; border-top:1px solid var(--line); flex:0 0 auto; }
+  .navlink { display:block; width:100%; margin-top:8px; padding:6px 4px;
+             background:none; border:0; color:var(--muted); text-align:left;
+             cursor:pointer; font:inherit; }
+  .navlink:hover { color:var(--ink); background:none; border:0; }
+  #addForm { display:flex; gap:6px; margin-bottom:8px; }
+  #addForm input { flex:1; min-width:0; padding:6px 8px; border:1px solid var(--line);
+                   border-radius:8px; background:var(--input-bg); color:var(--ink); }
+  #renameInput { font-size:15px; font-weight:650; padding:4px 8px;
+                 border:1px solid var(--accent); border-radius:8px; width:300px;
+                 background:var(--input-bg); color:var(--ink); }
+  .hidden { display:none !important; }
+  .switch { position:relative; display:inline-block; width:44px; height:24px; }
+  .switch input { opacity:0; width:0; height:0; }
+  .switch .slider { position:absolute; inset:0; background:var(--line-strong);
+                    border-radius:999px; cursor:pointer; transition:background .15s; }
+  .switch .slider::before { content:""; position:absolute; width:18px; height:18px;
+                            left:3px; top:3px; background:#fff; border-radius:50%;
+                            transition:transform .15s; }
+  .switch input:checked + .slider { background:var(--accent); }
+  .switch input:checked + .slider::before { transform:translateX(20px); }
+
+  /* ---------- main (topbar pinned, view panel scrolls) ---------- */
+  main { flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
+  .topbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+            padding:12px 24px; background:var(--panel); border-bottom:1px solid var(--line);
+            flex:0 0 auto; }
+  .views { flex:1 1 auto; min-height:0; overflow-y:auto;
+           display:flex; flex-direction:column; }
+  .topbar h1 { font-size:16px; margin:0; }
+  .sub { color:var(--muted); font-size:12px; }
+  .pathtoggle { cursor:pointer; border-bottom:1px dashed var(--muted); }
+  .pathtoggle:hover { color:var(--ink); }
+  .dl { color:var(--accent); text-decoration:none; font-weight:600; }
+  .dl:hover { text-decoration:underline; }
+  .dlwrap { position:relative; }
+  .dlmenu { position:absolute; right:0; top:calc(100% + 4px); background:var(--panel);
+            border:1px solid var(--line); border-radius:10px; min-width:120px;
+            box-shadow:0 8px 28px rgba(0,0,0,.14); z-index:30; overflow:hidden; }
+  .dlmenu a { display:block; padding:9px 16px; cursor:pointer; font-size:13.5px; }
+  .dlmenu a:hover { background:var(--active-bg); }
+  .spacer { flex:1; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
+           background:var(--badge-bg); }
+  .badge.warn { background:var(--badge-warn-bg); color:var(--badge-warn-ink); }
+  .content { max-width:1150px; width:100%; margin:20px auto; padding:0 20px;
+             display:grid; gap:16px; flex:0 0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 20px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
+             color:var(--muted); margin:0 0 12px; }
+  .params-row { display:flex; gap:28px; flex-wrap:wrap; align-items:end; }
+  .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .field input[type=number] { width:90px; padding:6px 8px; border:1px solid var(--line);
+                              border-radius:8px; background:var(--input-bg); color:var(--ink); }
+  .field input[type=range] { width:220px; accent-color:var(--accent); }
+  .field output { font-weight:600; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; }
+  .stat .k { font-size:12px; color:var(--muted); }
+  .stat .v { font-size:19px; font-weight:650; margin-top:3px; font-variant-numeric:tabular-nums; }
+  .stat.hl { border-color:var(--accent); }
+  .stat.hl .v { color:var(--accent); }
+  #uploadMsg { font-size:13px; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  select { padding:6px 8px; border:1px solid var(--line); border-radius:8px;
+           background:var(--panel); color:var(--ink); font:inherit; max-width:100%; }
+  .setrow { display:grid; grid-template-columns:220px 1fr; gap:12px; align-items:center;
+            padding:12px 0; border-bottom:1px solid var(--line); }
+  .setrow:last-child { border-bottom:0; }
+  .setrow select { max-width:240px; }
+  .updrow { display:grid; grid-template-columns:200px auto 1fr auto minmax(100px, auto);
+            gap:10px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+  .updrow:last-child { border-bottom:0; }
+  .updrow input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line);
+                             border-radius:8px; font:inherit; background:var(--input-bg);
+                             color:var(--ink); }
+  .rowmsg { font-size:12px; color:var(--muted); }
+  details.adv { border:1px solid var(--line); border-radius:10px; padding:10px 16px;
+                background:var(--panel); }
+  details.adv summary { cursor:pointer; font-weight:600; color:var(--muted);
+                        font-size:13px; }
+  .advgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr));
+             gap:12px; margin-top:12px; }
+  .advgrid label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .advgrid input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line);
+                              border-radius:8px; font:inherit; background:var(--input-bg);
+                              color:var(--ink); }
+
+  /* ---------- big empty-state upload zone ---------- */
+  .emptywrap { display:flex; align-items:center; justify-content:center;
+               flex:1 1 auto; padding:24px; }
+  .uploadzone { text-align:center; border:2px dashed var(--line-strong); border-radius:16px;
+                padding:70px 80px; background:var(--panel); }
+  .uploadzone.drag { border-color:var(--accent); background:var(--active-bg); }
+  .uploadzone .big { font-size:44px; line-height:1; margin-bottom:14px; }
+  .uploadzone h2 { margin:0 0 6px; font-size:20px; }
+  .uploadzone p { color:var(--muted); margin:0 0 24px; }
+  .bigbtn { display:inline-block; background:var(--accent); color:#fff; font-size:17px;
+            font-weight:650; padding:16px 42px; border-radius:12px; cursor:pointer;
+            border:1px solid var(--accent); }
+  .bigbtn:hover { filter:brightness(1.05); }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:5px 6px; text-align:right; border-bottom:1px solid var(--line);
+           white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  th[data-key] { cursor:pointer; user-select:none; }
+  th[data-key]:hover { color:var(--ink); }
+  th .arrow { font-size:10px; margin-left:2px; }
+  th:first-child, td:first-child { text-align:left; }
+  td.num, th.num { font-variant-numeric:tabular-nums; }
+  tr:hover td { background:var(--hover); }
+  tr.dirty td { background:var(--dirty-bg); }
+  .st { padding:1px 8px; border-radius:999px; font-size:11px; background:var(--st-ok-bg); color:var(--st-ok-ink); }
+  .st.warn { background:var(--st-warn-bg); color:var(--st-warn-ink); }
+  td input[type=number] { width:100%; min-width:70px; padding:3px 1px;
+                          border:1px solid transparent; border-radius:6px;
+                          background:transparent; text-align:right;
+                          font-variant-numeric:tabular-nums; appearance:textfield; }
+  td input[type=number]::-webkit-outer-spin-button,
+  td input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  td input[type=number]:hover { border-color:var(--line); background:var(--panel); }
+  td input[type=number]:focus { border-color:var(--accent); background:var(--panel); outline:none; }
+  .computed { color:var(--ink); }
+  .welcome { flex:1 1 auto; display:flex; flex-direction:column; align-items:center;
+             justify-content:center; text-align:center; color:var(--muted);
+             padding:80px 20px; }
+  .welcome b { color:var(--ink); }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand">Equans AutoTender</div>
+  <div class="navlabel">TENDERS</div>
+  <ul id="tenderList"></ul>
+  <div class="addbox">
+    <div id="addForm" class="hidden">
+      <input id="tenderName" placeholder="Tender name" maxlength="60">
+      <button id="createBtn" class="primary">Create</button>
+    </div>
+    <button id="addBtn" style="width:100%">+ Add tender</button>
+    <button id="settingsBtn" class="navlink">&#9881; Settings</button>
+  </div>
+</nav>
+
+<main>
+  <div class="topbar" id="topbar">
+    <div>
+      <div style="display:flex; align-items:center; gap:8px">
+        <h1 id="tenderTitle">No tender selected</h1>
+        <input id="renameInput" class="hidden" maxlength="60" title="Enter to save, Esc to cancel">
+        <button id="renameBtn" class="navlink hidden" title="rename tender"
+                style="margin-top:0; padding:4px 8px; font-size:15px">&#9998;</button>
+      </div>
+      <div class="sub" id="sub">create or select a tender on the left</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge warn hidden" id="reviewBadge"></span>
+    <span class="badge hidden" id="dirtyBadge">unsaved edits</span>
+    <button id="saveBtn" class="hidden" disabled>Save changes</button>
+    <div class="dlwrap hidden" id="dlwrap">
+      <button id="pdfBtn" class="primary">Download &#9662;</button>
+      <div id="dlMenu" class="dlmenu hidden">
+        <a data-fmt="pdf" title="portable document">PDF</a>
+        <a data-fmt="html" title="standalone web page">HTML</a>
+        <a data-fmt="docx" title="editable Word document">DOCX</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="views">
+    <div class="content" id="content"></div>
+
+    <div class="emptywrap hidden" id="emptywrap">
+    <div class="uploadzone" id="zone">
+      <div class="big">&#128194;</div>
+      <h2>Upload tender</h2>
+      <p>positions <b>.csv</b> is calculated immediately &middot;
+         tender <b>.pdf</b> is stored until _1_AI_InputProcessing exists<br>
+         you can also drag &amp; drop the file here</p>
+      <label class="bigbtn">Upload tender
+        <input type="file" id="bigFile" accept=".csv,.pdf" hidden>
+      </label>
+      <p id="uploadMsg"></p>
+    </div>
+  </div>
+
+    <div class="welcome hidden" id="welcome">
+      <b>No tenders yet.</b><br>Create the first one with <b>+ Add tender</b> on the left.
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function setDarkMode(on) {
+  document.body.classList.toggle("dark", on);
+  localStorage.setItem("autotender_dark", on ? "1" : "0");
+}
+if (localStorage.getItem("autotender_dark") === "1") document.body.classList.add("dark");
+let tenders = [], current = null;      // current = tender id or null
+let meta = null, calc = null, params = null;
+let dirtyFields = new Map();           // lv_id -> Set of edited field names
+let sortState = { key: null, dir: 1 }; // column key + 1 asc / -1 desc
+let view = "tender";                   // "tender" | "settings"
+let pathExpanded = false;              // source-path disclosure in the topbar
+let uiSettings = null;
+
+const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
+const chf = x => x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+/* ------------------------------------------------ table sorting */
+
+const COLS = { lv:0, product:1, code:2, quantity:3, unit:4, net:5, material:6, hours:7, labour:8, direct:9, status:10 };
+
+// sort keys read the LIVE cells, so an edited quantity/labour sorts correctly
+function sortValue(tr, key) {
+  const cell = tr.children[COLS[key]];
+  if (key === "quantity" || key === "net" || key === "labour")
+    return parseFloat(cell.querySelector("input").value) || 0;
+  if (key === "material" || key === "direct" || key === "hours")
+    return parseFloat(cell.textContent.replace(/,/g, "")) || 0;
+  return cell.textContent.trim().toLowerCase();
+}
+
+function applySort() {
+  if (!sortState.key) return;
+  const tb = $("posTable").querySelector("tbody");
+  [...tb.children]
+    .sort((a, b) => {
+      const va = sortValue(a, sortState.key), vb = sortValue(b, sortState.key);
+      const cmp = typeof va === "number" ? va - vb : va.localeCompare(vb);
+      return (cmp || a.dataset.lv.localeCompare(b.dataset.lv)) * sortState.dir;
+    })
+    .forEach(tr => tb.appendChild(tr));   // moving nodes keeps edits + listeners
+  $("posTable").querySelectorAll("th[data-key]").forEach(th => {
+    th.querySelector(".arrow").textContent = th.dataset.key === sortState.key
+      ? (sortState.dir > 0 ? "\u25B2" : "\u25BC") : "";
+  });
+}
+
+/* ------------------------------------------------ tenders (sidebar) */
+
+async function refreshTenders(selectId) {
+  tenders = await (await fetch("/api/tenders")).json();
+  if (selectId) current = selectId;
+  else if (!current || !tenders.some(t => t.id === current)) current = tenders[0]?.id ?? null;
+  renderSidebar();
+  await loadTender();
+}
+
+function renderSidebar() {
+  $("tenderList").innerHTML = tenders.map(t =>
+    `<li data-id="${t.id}" class="${t.id === current ? "active" : ""}" title="${esc(t.name)}">
+       <span class="dot ${t.status}"></span>
+       <span class="tname">${esc(t.name)}</span>
+       <button class="del" data-del="${t.id}" title="delete tender">&#10005;</button>
+     </li>`).join("");
+}
+
+async function loadTender() {
+  meta = calc = null;
+  view = "tender";   // selecting/refreshing tenders always returns to that view
+  if (!current) { renderMain(); return; }
+  const res = await fetch(`/api/tenders/${current}`);
+  const j = await res.json();
+  if (!res.ok) { current = null; renderSidebar(); renderMain(); return; }
+  meta = j.meta; calc = j.calc; params = j.params;
+  dirtyFields = new Map();
+  renderMain();
+}
+
+/* ------------------------------------------------ main area rendering */
+
+function renderMain() {
+  if (view === "settings") { renderSettings(); return; }
+  const hasCalc = !!(calc && calc.position_results);
+  $("emptywrap").classList.add("hidden");
+  $("welcome").classList.add("hidden");
+  $("content").classList.add("hidden");
+  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.add("hidden"));
+  $("dlMenu").classList.add("hidden");
+  $("renameBtn").classList.add("hidden");
+  $("dirtyBadge").classList.add("hidden");
+  $("reviewBadge").classList.add("hidden");
+
+  if (!tenders.length) { $("welcome").classList.remove("hidden"); return; }
+  if (!current) { $("tenderTitle").textContent = "No tender selected"; return; }
+
+  $("tenderTitle").textContent = meta.name;
+  $("renameBtn").classList.remove("hidden");
+  if (!hasCalc) {
+    $("sub").innerHTML = meta.status === "pdf_stored"
+      ? `<a class="dl" href="/api/tenders/${current}/download?file=tender" download>${esc(meta.uploaded_file || "tender.pdf")}</a>` +
+        ` stored - waiting for _1_AI_InputProcessing, or upload a positions csv`
+      : "new tender - no calculation yet";
+    $("emptywrap").classList.remove("hidden");
+    return;
+  }
+
+  const srcPath = calc.input?.positions_file ?? "";
+  const srcName = srcPath.split("/").pop() || srcPath || "?";
+  $("sub").innerHTML =
+    `${calc.position_results.length} positions · ` +
+    `<span id="pathToggle" class="pathtoggle" title="show full path">` +
+    `${pathExpanded ? "&#9662;" : "&#9656;"} ${esc(pathExpanded ? srcPath : srcName)}</span>` +
+    ` <a class="dl" href="/api/tenders/${current}/download?file=positions" download
+        title="download ${esc(srcName)}">&#8681;</a>`;
+  $("pathToggle").addEventListener("click", () => {
+    pathExpanded = !pathExpanded;
+    $("pathToggle").innerHTML =
+      `${pathExpanded ? "&#9662;" : "&#9656;"} ` +
+      esc(pathExpanded ? srcPath : srcName);
+    $("pathToggle").title = pathExpanded ? "hide full path" : "show full path";
+  });
+  const review = calc.position_results.filter(p => p.review_required).length;
+  $("reviewBadge").classList.toggle("hidden", review === 0);
+  $("reviewBadge").textContent = `${review} need review`;
+  $("content").classList.remove("hidden");
+  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.remove("hidden"));
+
+  const p = params;
+  $("content").innerHTML = `
+    <section class="card">
+      <h2>Scenario</h2>
+      <div class="params-row">
+        <div class="field">
+          <label>Target margin <output id="marginOut">${p.commercial.target_margin_pct}</output>%</label>
+          <input type="range" id="margin" min="0" max="15" step="0.5" value="${p.commercial.target_margin_pct}">
+        </div>
+        <div class="field"><label>Overhead %</label>
+          <input type="number" id="overhead" step="0.5" min="0" max="30" value="${p.commercial.overhead_pct}"></div>
+        <div class="field"><label>Material waste %</label>
+          <input type="number" id="waste" step="0.5" min="0" max="20" value="${p.allowances.material_waste_pct}"></div>
+        <div class="field"><label>Status</label>
+          <span class="badge">${esc(meta.status)}</span></div>
+      </div>
+    </section>
+    <section class="stats">
+      <div class="stat"><div class="k">Material</div><div class="v" id="cMat">-</div></div>
+      <div class="stat"><div class="k">Labour</div><div class="v" id="cLab">-</div></div>
+      <div class="stat"><div class="k">Direct cost</div><div class="v" id="cDir">-</div></div>
+      <div class="stat"><div class="k">Cost baseline</div><div class="v" id="cBase">-</div></div>
+      <div class="stat hl"><div class="k">Indicative selling price</div><div class="v" id="cPrice">-</div></div>
+    </section>
+    <section class="card">
+      <h2>Positions - click a column header to sort, white cells are editable</h2>
+      <table id="posTable">
+        <thead><tr>
+          <th data-key="lv">LV<span class="arrow"></span></th>
+          <th data-key="product">Product<span class="arrow"></span></th>
+          <th data-key="code">Install code<span class="arrow"></span></th>
+          <th data-key="quantity" class="num">Qty<span class="arrow"></span></th>
+          <th data-key="unit">Unit<span class="arrow"></span></th>
+          <th data-key="net" class="num">Net/unit<span class="arrow"></span></th>
+          <th data-key="material" class="num">Material<span class="arrow"></span></th>
+          <th data-key="hours" class="num">Hours<span class="arrow"></span></th>
+          <th data-key="labour" class="num">Labour<span class="arrow"></span></th>
+          <th data-key="direct" class="num">Direct<span class="arrow"></span></th>
+          <th data-key="status">Status<span class="arrow"></span></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="tableMsg" style="color:var(--muted);font-size:12px;margin-bottom:0"></p>
+    </section>`;
+
+  const tb = $("posTable").querySelector("tbody");
+  calc.position_results.forEach((pos, i) => {
+    const tr = document.createElement("tr");
+    tr.dataset.lv = pos.lv_id;
+    const status = pos.review_required ? "quote required" : pos.status;
+    tr.innerHTML =
+      `<td>${pos.lv_id}</td><td>${pos.matched_product_id}</td><td>${pos.install_code}</td>` +
+      `<td class="num"><input type="number" min="0" step="any" data-f="quantity" value="${pos.quantity}"></td>` +
+      `<td>${pos.unit}</td>` +
+      `<td class="num"><input type="number" min="0" step="0.01" data-f="net_unit_cost_chf" value="${pos.net_unit_cost_chf}"></td>` +
+      `<td class="num c-mat"></td>` +
+      `<td class="num">${pos.adjusted_install_hours}</td>` +
+      `<td class="num"><input type="number" min="0" step="0.01" data-f="labour_cost_chf" value="${pos.labour_cost_chf}"></td>` +
+      `<td class="num c-dir"></td>` +
+      `<td><span class="st ${pos.review_required ? "warn" : ""}">${status}</span></td>`;
+    tb.appendChild(tr);
+    tr.querySelectorAll("input[data-f]").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const lv = tr.dataset.lv;
+        if (!dirtyFields.has(lv)) dirtyFields.set(lv, new Set());
+        dirtyFields.get(lv).add(inp.dataset.f);
+        tr.classList.add("dirty");
+        updateSaveState();
+        recompute();
+      });
+    });
+  });
+
+  ["margin", "overhead", "waste"].forEach(id =>
+    $(id).addEventListener("input", recompute));
+  $("posTable").querySelectorAll("th[data-key]").forEach(th =>
+    th.addEventListener("click", () => {
+      if (sortState.key === th.dataset.key) sortState.dir *= -1;
+      else { sortState.key = th.dataset.key; sortState.dir = 1; }
+      applySort();
+    }));
+  applySort();   // keep the chosen ordering after save/reload
+  updateSaveState();
+  recompute();
+}
+
+/* live recompute - mirrors step4_project.py and the PDF report; labour comes
+   from the (possibly edited) labour input, hours stays as loaded */
+function recompute() {
+  if (!calc) return;
+  const waste = parseFloat($("waste").value) || 0;
+  const overhead = parseFloat($("overhead").value) || 0;
+  const margin = parseFloat($("margin").value) || 0;
+  $("marginOut").value = margin;
+
+  let material = 0, labour = 0, supplierMat = 0;
+  document.querySelectorAll("#posTable tbody tr").forEach(tr => {
+    const pos = calc.position_results.find(p => p.lv_id === tr.dataset.lv);
+    const qty = parseFloat(tr.querySelector('[data-f="quantity"]').value) || 0;
+    const net = parseFloat(tr.querySelector('[data-f="net_unit_cost_chf"]').value) || 0;
+    const lab = parseFloat(tr.querySelector('[data-f="labour_cost_chf"]').value) || 0;
+    const mat = r2(qty * net * (1 + waste / 100));
+    tr.querySelector(".c-mat").textContent = chf(mat);
+    tr.querySelector(".c-dir").textContent = chf(r2(mat + lab));
+    material += mat; labour += lab;
+    if (pos.price_source === "supplier_package") supplierMat += mat;
+  });
+  const direct = r2(material + labour);
+  const services = calc.project_cost?.services_chf?.total_chf ?? 0;
+  const a = params.allowances;
+  const allowances = r2(material * a.small_material_pct / 100
+                      + supplierMat * a.supplier_package_contingency_pct / 100
+                      + direct * a.transport_equipment_pct / 100);
+  const baseline = r2(r2(direct + services + allowances) * (1 + overhead / 100));
+  const price = r2(baseline / (1 - margin / 100));
+
+  $("cMat").textContent = chf(r2(material));
+  $("cLab").textContent = chf(r2(labour));
+  $("cDir").textContent = chf(direct);
+  $("cBase").textContent = chf(baseline);
+  $("cPrice").textContent = chf(price);
+}
+
+function updateSaveState() {
+  const hasEdits = dirtyFields.size > 0;
+  $("saveBtn").disabled = !hasEdits;
+  $("dirtyBadge").classList.toggle("hidden", !hasEdits);
+  $("tableMsg").textContent = hasEdits ? "unsaved manual edits - press Save changes" : "";
+}
+
+/* ------------------------------------------------ settings (models) */
+
+const TASKS = [
+  { key: "input_processing", label: "Input processing" },
+  { key: "productivity_factors", label: "Productivity factors" },
+  { key: "win_ratio", label: "Win-ratio prediction" },
+];
+
+async function loadSettings() {
+  uiSettings = await (await fetch("/api/settings")).json();
+  if (view === "settings") renderSettings();
+}
+
+const _sel = (cls, options, value) =>
+  `<select class="${cls}" style="max-width:100%">` +
+  options.map(o => `<option value="${esc(o.v)}" ${o.v === value ? "selected" : ""}>${esc(o.t)}</option>`).join("") +
+  `</select>`;
+
+function renderSettings() {
+  $("emptywrap").classList.add("hidden");
+  $("welcome").classList.add("hidden");
+  $("content").classList.remove("hidden");
+  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.add("hidden"));
+  $("dlMenu").classList.add("hidden");
+  $("renameBtn").classList.add("hidden");
+  $("dirtyBadge").classList.add("hidden");
+  $("reviewBadge").classList.add("hidden");
+  $("tenderTitle").textContent = "Settings";
+  $("sub").textContent = "LoRA models";
+  if (!uiSettings) { loadSettings(); return; }
+
+  $("content").innerHTML = `
+    <section class="card">
+      <h2>LoRA per task</h2>
+      <div id="verRows"></div>
+    </section>
+    <section class="card">
+      <h2>Update LoRAs</h2>
+      <div id="updRows"></div>
+    </section>
+    <section class="card">
+      <h2>Appearance</h2>
+      <div class="setrow">
+        <b>Dark mode</b>
+        <label class="switch"><input type="checkbox" id="darkToggle"><span class="slider"></span></label>
+      </div>
+    </section>
+    <details class="adv">
+      <summary>Advanced</summary>
+      <div class="advgrid">
+        <div><label>Base model</label><div id="advBase"></div></div>
+        <div><label>Models dir</label><input type="text" id="adv-models"></div>
+        <div><label>LoRAs dir</label><input type="text" id="adv-loras"></div>
+        <div><label>Cache dir</label><input type="text" id="adv-cache"></div>
+      </div>
+      <p class="hint" style="margin:10px 0 0">Changing the base model hides LoRA
+         versions trained for another base until they are retrained.</p>
+    </details>
+    <div class="upload-row">
+      <button id="saveSettingsBtn" class="primary">Save</button>
+      <span id="settingsMsg" class="hint"></span>
+    </div>`;
+
+  $("verRows").innerHTML = TASKS.map(t => `
+    <div class="setrow">
+      <b>${t.label}</b>
+      <div id="ver-${t.key}"></div>
+    </div>`).join("");
+  buildVersionSelects();
+
+  $("updRows").innerHTML = TASKS.map(t => `
+    <div class="updrow" data-task="${t.key}">
+      <b>${t.label}</b>
+      <button class="up-data">Upload data</button>
+      <input type="file" class="up-file" hidden>
+      <input type="text" class="up-links" placeholder="provide links for tenders or tender data">
+      <button class="up-go">Update</button>
+      <span class="rowmsg"></span>
+    </div>`).join("");
+  document.querySelectorAll("#updRows .updrow").forEach(row => {
+    const task = row.dataset.task;
+    row.querySelector(".up-links").value = uiSettings.tasks[task].links || "";
+    const file = row.querySelector(".up-file");
+    row.querySelector(".up-data").addEventListener("click", () => file.click());
+    file.addEventListener("change", async () => {
+      if (!file.files[0]) return;
+      const msg = row.querySelector(".rowmsg");
+      msg.textContent = "uploading...";
+      const res = await fetch(
+        `/api/settings/upload-data?task=${task}&name=${encodeURIComponent(file.files[0].name)}`,
+        { method: "POST", body: file.files[0] });
+      const j = await res.json();
+      msg.textContent = j.ok ? "data stored" : j.error;
+      file.value = "";
+    });
+    row.querySelector(".up-go").addEventListener("click", async () => {
+      const msg = row.querySelector(".rowmsg");
+      msg.textContent = "updating...";
+      const res = await fetch("/api/settings/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task, links: row.querySelector(".up-links").value }),
+      });
+      const j = await res.json();
+      if (!j.ok) { msg.textContent = j.error; return; }
+      uiSettings = j.settings;
+      renderSettings();
+      $("settingsMsg").textContent = `updated - version ${j.version}`;
+    });
+  });
+
+  $("darkToggle").checked = document.body.classList.contains("dark");
+  $("darkToggle").addEventListener("change", e => setDarkMode(e.target.checked));
+
+  const adv = uiSettings.advanced;
+  $("advBase").innerHTML = _sel("s-base",
+    uiSettings.base_models.map(b => ({ v: b, t: b })), uiSettings.base_model);
+  $("advBase").querySelector(".s-base").addEventListener("change", e => {
+    uiSettings.base_model = e.target.value;
+    buildVersionSelects();
+  });
+  $("adv-models").value = adv.models_dir;
+  $("adv-loras").value = adv.loras_dir;
+  $("adv-cache").value = adv.cache_dir;
+
+  $("saveSettingsBtn").addEventListener("click", saveSettings);
+}
+
+function buildVersionSelects() {
+  TASKS.forEach(t => {
+    const task = uiSettings.tasks[t.key];
+    const options = [{ v: "", t: "none" },
+      ...task.versions.filter(v => v.base === uiSettings.base_model)
+        .map(v => ({ v: v.version, t: v.version }))];
+    const selected = options.some(o => o.v === task.selected) ? task.selected : "";
+    $("ver-" + t.key).innerHTML = _sel("s-ver", options, selected);
+  });
+}
+
+async function saveSettings() {
+  const tasks = {};
+  TASKS.forEach(t => tasks[t.key] = {
+    selected: document.querySelector(`#ver-${t.key} .s-ver`)?.value || null,
+    links: document.querySelector(`#updRows .updrow[data-task="${t.key}"] .up-links`)?.value || "",
+  });
+  const res = await fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_model: document.querySelector("#advBase .s-base")?.value || uiSettings.base_model,
+      tasks,
+      advanced: {
+        models_dir: $("adv-models").value.trim(),
+        loras_dir: $("adv-loras").value.trim(),
+        cache_dir: $("adv-cache").value.trim(),
+      },
+    }),
+  });
+  const j = await res.json();
+  const msg = $("settingsMsg");
+  msg.classList.remove("ok", "err");
+  msg.classList.add(j.ok ? "ok" : "err");
+  msg.textContent = j.ok ? "saved" : j.error;
+  if (j.ok) uiSettings = j.settings;
+}
+
+$("settingsBtn").addEventListener("click", () => { view = "settings"; renderMain(); });
+
+/* ------------------------------------------------ actions */
+
+$("addBtn").addEventListener("click", () => {
+  $("addForm").classList.remove("hidden");
+  $("tenderName").value = "";
+  $("tenderName").focus();
+});
+$("tenderName").addEventListener("keydown", e => { if (e.key === "Enter") $("createBtn").click(); });
+$("createBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/tenders", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("tenderName").value }),
+  });
+  const j = await res.json();
+  if (!res.ok) { alert(j.error); return; }
+  $("addForm").classList.add("hidden");
+  await refreshTenders(j.id);
+});
+
+$("tenderList").addEventListener("click", async e => {
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    if (!confirm("Delete this tender?")) return;
+    await fetch(`/api/tenders/${del.dataset.del}`, { method: "DELETE" });
+    if (current === del.dataset.del) current = null;
+    await refreshTenders();
+    return;
+  }
+  const li = e.target.closest("li[data-id]");
+  if (li && li.dataset.id !== current) {
+    current = li.dataset.id;
+    renderSidebar();
+    await loadTender();
+  }
+});
+
+async function uploadFile(file) {
+  $("uploadMsg").className = "";
+  $("uploadMsg").textContent = `uploading ${file.name}…`;
+  try {
+    const res = await fetch(`/api/tenders/${current}/upload?name=${encodeURIComponent(file.name)}`,
+                            { method: "POST", body: file });
+    const j = await res.json();
+    const msg = $("uploadMsg");
+    msg.className = j.ok ? "ok" : "err";
+    msg.textContent = j.ok ? j.message : j.error;
+    if (j.ok) { await refreshTenders(current); }
+  } catch (e) { $("uploadMsg").className = "err"; $("uploadMsg").textContent = e; }
+}
+$("bigFile").addEventListener("change", e => {
+  if (e.target.files[0]) uploadFile(e.target.files[0]);
+  e.target.value = "";
+});
+const zone = $("zone");
+["dragover", "dragenter"].forEach(ev => zone.addEventListener(ev, e => {
+  e.preventDefault(); zone.classList.add("drag");
+}));
+["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => {
+  e.preventDefault(); zone.classList.remove("drag");
+}));
+zone.addEventListener("drop", e => {
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+});
+
+$("saveBtn").addEventListener("click", async () => {
+  const edits = {};
+  for (const [lv, fields] of dirtyFields) {
+    const tr = document.querySelector(`#posTable tbody tr[data-lv="${lv}"]`);
+    edits[lv] = Object.fromEntries([...fields].map(f => {
+      const v = parseFloat(tr.querySelector(`[data-f="${f}"]`).value);
+      return [f, isNaN(v) ? null : v];
+    }));
+  }
+  const res = await fetch(`/api/tenders/${current}/values`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edits }),
+  });
+  const j = await res.json();
+  if (!res.ok) { alert(j.error); return; }
+  await loadTender();
+});
+
+/* rename the current tender: pencil next to the title, Enter/blur saves, Esc cancels */
+let renaming = false;
+$("renameBtn").addEventListener("click", () => {
+  if (!meta || renaming) return;
+  renaming = true;
+  const inp = $("renameInput");
+  $("tenderTitle").classList.add("hidden");
+  inp.classList.remove("hidden");
+  inp.value = meta.name;
+  inp.focus();
+  inp.select();
+});
+async function commitRename(save) {
+  if (!renaming) return;
+  renaming = false;
+  const inp = $("renameInput"), h = $("tenderTitle");
+  const name = inp.value.trim();
+  inp.classList.add("hidden");
+  h.classList.remove("hidden");
+  if (!save || !name || name === meta.name) return;
+  const res = await fetch(`/api/tenders/${current}/rename`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const j = await res.json();
+  if (!j.ok) { alert(j.error); return; }
+  await refreshTenders(current);
+}
+$("renameInput").addEventListener("keydown", e => {
+  if (e.key === "Enter") commitRename(true);
+  if (e.key === "Escape") commitRename(false);
+});
+$("renameInput").addEventListener("blur", () => commitRename(true));
+
+$("pdfBtn").addEventListener("click", e => {
+  e.stopPropagation();
+  $("dlMenu").classList.toggle("hidden");
+});
+document.addEventListener("click", e => {
+  if (!e.target.closest(".dlwrap")) $("dlMenu").classList.add("hidden");
+});
+$("dlMenu").addEventListener("click", e => {
+  const item = e.target.closest("a[data-fmt]");
+  if (!item) return;
+  $("dlMenu").classList.add("hidden");
+  const q = `format=${item.dataset.fmt}&margin=${$("margin").value}` +
+            `&overhead=${$("overhead").value}&waste=${$("waste").value}`;
+  window.open(`/api/tenders/${current}/pdf?${q}`, "_blank");
+});
+
+refreshTenders();
+</script>
+</body>
+</html>

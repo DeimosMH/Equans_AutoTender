@@ -1,1 +1,4 @@
 __pycache__/
+src/web_ui/uploads/
+src/web_ui/tenders/
+src/web_ui/ui_settings.json

@@ -4,6 +4,7 @@ Requires pyyaml for settings.yaml (the only non-stdlib dependency).
 """
 import csv
 import json
+import os
 import sys
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from pathlib import Path
@@ -18,7 +19,9 @@ getcontext().prec = 34
 
 BASE = Path(__file__).resolve().parent
 OUTPUT = BASE / "output"
-CALC_JSON = OUTPUT / "calc.json"
+# the web UI runs the steps per tender and redirects the result via this env var
+CALC_JSON = (Path(os.environ["AUTOTENDER_CALC_OUT"])
+             if os.environ.get("AUTOTENDER_CALC_OUT") else OUTPUT / "calc.json")
 SETTINGS_YAML = BASE / "settings.yaml"
 EXPECTED_JSON = BASE.parent.parent / "materials" / "expected_output_example.json"
 

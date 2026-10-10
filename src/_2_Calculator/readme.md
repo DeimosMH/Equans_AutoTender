@@ -47,10 +47,15 @@ python3 validate.py         # checks calc.json against materials/expected_output
 
 Each step reads `output/calc.json`, adds its fields and writes it back, so the
 file grows step by step. Step 1 rebuilds `position_results` from the input CSV,
-so it must run before 2-4. The scripts resolve paths relative to their own
-location (`common.BASE`) and can be started from any working directory.
+so it must run before 2-4; it also accepts an explicit positions csv as an
+argument (`python3 step1_material.py path/to/positions.csv`) - the web UI uses
+that for uploads. The scripts resolve paths relative to their own location
+(`common.BASE`) and can be started from any working directory.
 
 `common.py` holds the shared loaders and the rounding helper; nothing else is shared.
+The output location defaults to `output/calc.json` and can be redirected with the
+`AUTOTENDER_CALC_OUT` env var - the web UI uses that to give each tender its own
+`calc.json`.
 
 ## How the calculation works
 

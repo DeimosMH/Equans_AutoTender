@@ -3,10 +3,15 @@
 
 material_cost = quantity x net unit cost x (1 + material waste %)
 
-Rebuilds position_results in output/calc.json from input/example_lv_positions.csv:
+Rebuilds position_results in output/calc.json from the positions csv
+(input/example_lv_positions.csv via settings.yaml, or a path given as the
+optional command line argument - the web UI uses that for uploads):
 ids, matched product, pricing basis, material cost, review flags and status.
 Replaces any previous position_results, so run this first, then steps 2-4.
 """
+import sys
+from pathlib import Path
+
 from common import (
     BASE,
     D,
@@ -25,7 +30,10 @@ def main():
     settings = load_settings()
     params = load_params(settings)
     catalog = load_catalog(settings)
-    positions_file = resolve_positions_file(settings)
+    if len(sys.argv) > 1:  # explicit positions csv, e.g. a web UI upload
+        positions_file = Path(sys.argv[1]).resolve()
+    else:
+        positions_file = resolve_positions_file(settings)
     waste = D(params["allowances"]["material_waste_pct"]) / 100
 
     results = []
