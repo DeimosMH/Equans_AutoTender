@@ -11,6 +11,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -125,6 +126,30 @@ def _audit(root, action, value):
     _atomic(root / 'audit' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '_' + uuid.uuid4().hex + '.json'), event)
 
 
+def _commercial_snapshot(calc, params, payload):
+    baseline = _number(calc['project_cost']['cost_baseline_chf'], 'cost baseline')
+    margin = _number(payload.get('margin_pct', params['commercial']['target_margin_pct']), 'margin', False)
+    if not 0 <= margin < 100:
+        raise ValueError('margin must be in [0,100)')
+    bid = _number(payload.get('bid_amount_chf', baseline / (1 - margin / 100)), 'bid amount')
+    selected_margin = margin
+    margin = 100 * (1 - baseline / bid)
+    context = copy.deepcopy(payload.get('prebid_context', {}))
+    if not isinstance(context, dict) or set(context) - dataset.BID_FIELDS:
+        raise ValueError('prebid_context contains unsupported or post-award fields')
+    context.update(bid_amount_chf=bid, cost_amount_chf=baseline, margin_pct=margin)
+    snap = {
+            'bid_amount_chf': bid, 'margin_pct': margin, 'selected_margin_pct': selected_margin, 'cost_baseline_chf': baseline,
+            'prebid_input': context, 'calc': copy.deepcopy(calc), 'params': copy.deepcopy(params),
+            'prediction': copy.deepcopy(calc.get('recommended_bid_range'))}
+    cfg = params.get('stretch_bid_optimization', {})
+    if (snap.get('prediction') or {}).get('model', {}).get('kind') == 'heuristic' and cfg.get('enabled'):
+        reference = baseline / (1 - _number(params['commercial']['target_margin_pct'], 'reference margin', False) / 100)
+        probability = float(cfg.get('reference_win_probability', .55)) + float(cfg.get('strategic_appetite_adjustment', 0)) + float(cfg.get('competition_adjustment', 0)) - float(cfg.get('price_sensitivity_probability_points_per_1pct_price', .05)) * (bid / reference - 1) * 100
+        snap['predicted_win_probability'] = max(float(cfg.get('minimum_probability', .05)), min(float(cfg.get('maximum_probability', .95)), probability))
+    return snap
+
+
 def capture_submission(folder, calc, params, payload):
     root = _root(folder)
     with _lock(root):
@@ -138,28 +163,11 @@ def capture_submission(folder, calc, params, payload):
         submitted = _date(payload.get('submitted_at', now.isoformat()), 'submitted_at')
         if submitted > now + timedelta(minutes=5):
             raise ValueError('Submission cannot be in the future')
-        baseline = _number(calc['project_cost']['cost_baseline_chf'], 'cost baseline')
-        margin = _number(payload.get('margin_pct', params['commercial']['target_margin_pct']), 'margin', False)
-        if not 0 <= margin < 100:
-            raise ValueError('margin must be in [0,100)')
-        bid = _number(payload.get('bid_amount_chf', baseline / (1 - margin / 100)), 'bid amount')
-        selected_margin = margin
-        margin = 100 * (1 - baseline / bid)
-        context = copy.deepcopy(payload.get('prebid_context', {}))
-        if not isinstance(context, dict) or set(context) - dataset.BID_FIELDS:
-            raise ValueError('prebid_context contains unsupported or post-award fields')
-        context.update(bid_amount_chf=bid, cost_amount_chf=baseline, margin_pct=margin)
-        snap = {'schema_version': 1, 'project_id': Path(folder).name,
-                'captured_at': now.isoformat(), 'submitted_at': submitted.isoformat(),
-                'training_eligible': submitted >= now - timedelta(minutes=5),
-                'bid_amount_chf': bid, 'margin_pct': margin, 'selected_margin_pct': selected_margin, 'cost_baseline_chf': baseline,
-                'prebid_input': context, 'calc': copy.deepcopy(calc), 'params': copy.deepcopy(params),
-                'prediction': copy.deepcopy(calc.get('recommended_bid_range'))}
-        cfg = params.get('stretch_bid_optimization', {})
-        if (snap.get('prediction') or {}).get('model', {}).get('kind') == 'heuristic' and cfg.get('enabled'):
-            reference = baseline / (1 - _number(params['commercial']['target_margin_pct'], 'reference margin', False) / 100)
-            probability = float(cfg.get('reference_win_probability', .55)) + float(cfg.get('strategic_appetite_adjustment', 0)) + float(cfg.get('competition_adjustment', 0)) - float(cfg.get('price_sensitivity_probability_points_per_1pct_price', .05)) * (bid / reference - 1) * 100
-            snap['predicted_win_probability'] = max(float(cfg.get('minimum_probability', .05)), min(float(cfg.get('maximum_probability', .95)), probability))
+        snap = _commercial_snapshot(calc, params, payload)
+        snap.update(schema_version=1, project_id=Path(folder).name,
+                    captured_at=now.isoformat(), submitted_at=submitted.isoformat(),
+                    training_eligible=submitted >= now-timedelta(minutes=5) and not payload.get('retrospective', False),
+                    capture_context='retrospective' if payload.get('retrospective', False) else 'submission')
         _canonical(snap)
         snap['hash'] = _hash(snap)
         _atomic(root / 'submission.json', snap)
@@ -176,6 +184,78 @@ def _invalidate_export(root):
             with _lock(path.parent):
                 path.unlink(missing_ok=True)
         _atomic(root / 'export.json', dict(export, status='revoked', revoked_at=_now()))
+
+
+def _offer(root, offer_id):
+    if not isinstance(offer_id, str) or not re.fullmatch('[a-f0-9]{32}', offer_id):
+        raise ValueError('Invalid offer identifier')
+    value = _read(root, f'offers/{offer_id}.json')
+    if value is None:
+        raise ValueError('Saved offer was not found')
+    if _hash({k:v for k,v in value.items() if k != 'hash'}) != value.get('hash'):
+        raise ValueError('Saved offer integrity check failed')
+    return value
+
+
+def read_offer(folder, offer_id):
+    with _lock(_root(folder)):
+        return _offer(_root(folder), offer_id)
+
+
+def capture_offer(folder, calc, params, commercial, descriptions, completed=False):
+    """A download freezes evidence; it does not assert that an offer was submitted."""
+    root = _root(folder)
+    with _lock(root):
+        price = calc['project_cost'].get('indicative_selling_price_chf')
+        value = _commercial_snapshot(calc, params, {'margin_pct':commercial['margin'],
+            'bid_amount_chf':price if price is not None else round(calc['project_cost']['cost_baseline_chf']/(1-commercial['margin']/100), 2)})
+        value.update(schema_version=1, project_id=Path(folder).name, commercial=commercial,
+                     descriptions=descriptions, captured_before_completion=not completed and not _outcome(root))
+        fingerprint = _hash(value)
+        for path in sorted((root/'offers').glob('*.json')):
+            old = _offer(root, path.stem)
+            if old['fingerprint'] == fingerprint:
+                return old
+        value.update(id=uuid.uuid4().hex, captured_at=_now(), fingerprint=fingerprint)
+        value['hash'] = _hash(value)
+        _atomic(root/'offers'/f"{value['id']}.json", value)
+        _audit(root, 'offer_downloaded', {'offer_id':value['id'], 'hash':value['hash']})
+        return value
+
+
+def confirm_offer_submission(folder, payload):
+    root = _root(folder)
+    with _lock(root):
+        if _outcome(root):
+            raise ValueError('Submission cannot change after an outcome was recorded')
+        old = _snapshot(root)
+        if old:
+            return old
+        offer = _offer(root, payload.get('offer_id'))
+        submitted = _date(payload.get('submitted_at'), 'submitted_at')
+        captured = _date(offer['captured_at'], 'captured_at')
+        if submitted < captured:
+            raise ValueError('The selected offer was downloaded after the submission date')
+        if submitted > datetime.now(timezone.utc)+timedelta(minutes=5):
+            raise ValueError('Submission cannot be in the future')
+        if payload.get('bid_amount_chf') is not None and abs(_number(payload['bid_amount_chf'], 'bid amount')-offer['bid_amount_chf']) > .005:
+            raise ValueError('Submitted price must match the selected offer')
+        snap = {k:copy.deepcopy(v) for k,v in offer.items() if k not in ('id','hash','fingerprint','descriptions','captured_before_completion')}
+        snap.update(offer_id=offer['id'], offer_hash=offer['hash'], confirmed_at=_now(),
+                    submitted_at=submitted.isoformat(), training_eligible=offer['captured_before_completion'],
+                    capture_context='downloaded_offer')
+        snap['hash'] = _hash(snap)
+        _atomic(root/'submission.json', snap)
+        _audit(root, 'submission_confirmed', {'offer_id':offer['id'], 'hash':snap['hash']})
+        return snap
+
+
+def _measurement(root):
+    value = _read(root, 'productivity.json')
+    if value and value.get('revision') is not None:
+        if value != _read(root, f"productivity_revisions/{value['revision']:06d}.json"):
+            raise ValueError('Productivity revision integrity check failed')
+    return value
 
 
 def record_outcome(folder, payload):
@@ -237,14 +317,20 @@ def record_outcome(folder, payload):
 
 
 def gather_evidence(folder, urls):
-    if not isinstance(urls, list) or not urls:
-        raise ValueError('Provide a nonempty list of simap project URLs')
+    if not isinstance(urls, list) or not 1 <= len(urls) <= 20:
+        raise ValueError('Provide 1–20 simap project URLs')
     # Validate all URLs before any network call; collector also validates redirects.
     for url in urls:
         simap.project_id(url)
     root = _root(folder)
     with _lock(root):
         result = simap.collect_sources(urls, root / 'public_evidence')
+        previous = _read(root, 'evidence.json') or {}
+        records = {r.get('publication_id', _hash(r)):r for r in previous.get('records', [])}
+        records.update({r.get('publication_id', _hash(r)):r for r in result.get('records', [])})
+        result['records'] = list(records.values())
+        result['source_count'] = len(records)
+        result['urls'] = sorted(set(previous.get('urls', [])) | set(urls))
         result['participation_inferred'] = False
         _atomic(root / 'evidence.json', result)
         _audit(root, 'evidence_gathered', {'counts': result['counts'], 'errors': result['errors'], 'urls': urls})
@@ -282,6 +368,9 @@ def _analysis(root):
         observations.append(f'{len(missing_quotes)} of {len(positions)} submission positions required supplier quotes; this is a pricing completeness observation, not a loss reason.')
     eligible = bool(snap and snap['training_eligible'] and outcome and outcome['verified'] and outcome['outcome'] in {'won','lost'} and _date(outcome['observed_at'], 'observed_at') > _date(snap['captured_at'], 'captured_at'))
     return {'schema_version': 1, 'submission_hash': (snap or {}).get('hash'),
+            'project_name': (snap or {}).get('calc', {}).get('project', {}).get('name', root.parent.name),
+            'our_bid_chf': (snap or {}).get('bid_amount_chf'), 'submitted_at': (snap or {}).get('submitted_at'),
+            'observed_at': (outcome or {}).get('observed_at'), 'evidence_reference': (outcome or {}).get('evidence_reference'),
             'outcome_revision': (outcome or {}).get('revision'), 'training_eligible': eligible,
             'outcome': (outcome or {}).get('outcome'), 'verified': (outcome or {}).get('verified', False),
             'confirmed_reason_codes': outcome['reason_codes'] if outcome and outcome['reasons_confirmed'] else [],
@@ -298,18 +387,24 @@ def analyze(folder):
     with _lock(root):
         result = _analysis(root)
         _atomic(root / 'analysis.json', result)
-        lines = ['Tender outcome review', '', result['causal_conclusion'], '',
-                 'Outcome: ' + str(result['outcome']), 'Training eligible: ' + str(result['training_eligible']),
-                 '', 'Confirmed reasons: ' + ', '.join(result['confirmed_reason_codes']),
-                 'Reported narrative: ' + result['narrative'], '', 'Missing information:']
+        lines = ['Tendif - Tender outcome review', result['project_name'], '',
+                 'Outcome: ' + (result['outcome'] or 'Not recorded').capitalize(),
+                 'Our submitted offer: ' + (f"CHF {result['our_bid_chf']:,.2f}" if result['our_bid_chf'] else 'Not recorded'),
+                 'Submitted: ' + str(result['submitted_at'] or 'Not recorded'),
+                 'Result received: ' + str(result['observed_at'] or 'Not recorded'),
+                 'Evidence: ' + str(result['evidence_reference'] or 'Not provided'),
+                 '', 'Confirmed reasons: ' + (', '.join(c.replace('_',' ') for c in result['confirmed_reason_codes']) or 'Not provided'),
+                 'Notes: ' + (result['narrative'] or 'None'), '', 'Missing information:']
         lines.extend('- ' + text for text in result['missing_information'])
         lines.extend(['', 'Observations:'] + ['- ' + text for text in result['observations']])
-        lines.extend(['', 'Comparable prices (descriptive only):'] + ['- ' + json.dumps(c, ensure_ascii=False) for c in result['comparisons']])
+        lines.extend(['', 'Comparable prices:'] + [f"- {c['name']}: CHF {c['price_chf']:,.2f}; our offer {c['our_price_difference_pct']:+.2f}% (CHF {c['our_price_difference_chf']:+,.2f})." for c in result['comparisons']])
+        lines.extend(['', result['causal_conclusion']])
+        _atomic(root / 'reports/postmortem.txt', '\n'.join(lines) + '\n', raw=True)
         # Escaping all supplied text also makes Markdown safe in renderers allowing HTML.
         escaped = '\n'.join(html.escape(line) for line in lines)
         markdown = ''.join('\\' + ch if ch in '\\`*_{}[]()#+-.!|>' else ch for ch in escaped)
         _atomic(root / 'reports/postmortem.md', markdown + '\n', raw=True)
-        _atomic(root / 'reports/postmortem.html', '<!doctype html><meta charset="utf-8"><title>Tender outcome review</title><pre>' + escaped + '</pre>', raw=True)
+        _atomic(root / 'reports/postmortem.html', '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tendif - Tender outcome review</title><style>body{max-width:850px;margin:40px auto;padding:0 24px;color:#24272b;background:#fff}pre{font:15px/1.7 system-ui,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;border-top:4px solid #c4420c;padding-top:24px}</style><main><pre>' + escaped + '</pre></main></html>', raw=True)
         return result
 
 
@@ -348,4 +443,8 @@ def overview(folder):
     with _lock(root):
         return {'submission': _snapshot(root), 'outcome': _outcome(root),
                 'analysis': _read(root, 'analysis.json'), 'evidence': _read(root, 'evidence.json'),
-                'export': _read(root, 'export.json'), 'reason_codes': sorted(REASON_CODES)}
+                'export': _read(root, 'export.json'), 'reason_codes': sorted(REASON_CODES),
+                'productivity': _measurement(root),
+                'offers': sorted([{k:v for k,v in _offer(root, p.stem).items() if k in
+                    ('id','hash','captured_at','bid_amount_chf','captured_before_completion')}
+                    for p in (root/'offers').glob('*.json')], key=lambda r:r['captured_at'], reverse=True)}

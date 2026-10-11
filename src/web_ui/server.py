@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Web UI for the AutoTender calculator (stdlib only).
+"""Web UI for the Tendif calculator (stdlib only).
 
 Multi-tender workflow: each tender lives in tenders/<id>/ (meta.json, the
 uploaded positions csv and its own calc.json produced by the _2_Calculator
@@ -11,6 +11,7 @@ and recomputes server-side with the calculator's own Decimal logic.
 Run: python3 server.py [port]    -> http://127.0.0.1:<port>   (default 8080)
 """
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -22,16 +23,17 @@ import sys
 import time
 import zipfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 BASE = Path(__file__).resolve().parent
+RUNTIME = Path(os.environ.get('AUTOTENDER_UI_DATA_DIR', str(BASE))).resolve()
 CALC_DIR = BASE.parent / "_2_Calculator"
-TENDERS = BASE / "tenders"
-UPLOADS = BASE / "uploads"
-UI_SETTINGS = BASE / "ui_settings.json"
+TENDERS = RUNTIME / "tenders"
+UPLOADS = RUNTIME / "uploads"
+UI_SETTINGS = RUNTIME / "ui_settings.json"
 INDEX = BASE / "static" / "index.html"
 PREDICTION_DIR = BASE.parent / "_3_Prediction"
 sys.path.insert(0, str(PREDICTION_DIR))
@@ -42,7 +44,9 @@ sys.path.insert(0, str(FEEDBACK_DIR))
 import core as feedback_core
 import monitoring as feedback_monitoring
 import productivity as feedback_productivity
-PREPARATION_JOBS = JobStore(BASE / "training_jobs", PREDICTION_DIR / "data", BASE.parent.parent / "materials")
+from evaluation import ReviewStore
+PREPARATION_JOBS = JobStore(RUNTIME / "training_jobs", PREDICTION_DIR / "data", BASE.parent.parent / "materials")
+FEEDBACK_REVIEWS = ReviewStore(RUNTIME / "feedback_reviews")
 
 # reuse the calculator's loaders/rounding so paths and maths stay in one place
 _spec = importlib.util.spec_from_file_location("calc_common", CALC_DIR / "common.py")
@@ -82,7 +86,72 @@ def load_meta(tid: str) -> dict:
 
 def save_meta(meta: dict) -> None:
     meta_path(meta["id"]).parent.mkdir(parents=True, exist_ok=True)
-    meta_path(meta["id"]).write_text(json.dumps(meta, indent=2) + "\n")
+    feedback_core._atomic(meta_path(meta["id"]), meta)
+
+
+def is_finalised(meta):
+    return meta.get('lifecycle') == 'finalised' or (
+        not meta.get('lifecycle') and meta.get('status') in ('won', 'lost', 'withdrawn'))
+
+
+def commercial_values(body):
+    defaults = calc_common.load_params()
+    values = {}
+    for key, default, maximum in (
+        ('margin', defaults['commercial']['target_margin_pct'], 99),
+        ('overhead', defaults['commercial']['overhead_pct'], 100),
+        ('waste', defaults['allowances']['material_waste_pct'], 100)):
+        value = feedback_core._number(body.get(key, default), key, positive=False)
+        if not 0 <= value <= maximum:
+            raise ValueError(f'Invalid {key}')
+        values[key] = value
+    return values
+
+
+def commercial_calculation(tid, commercial):
+    calc = json.loads(calc_path(tid).read_text())
+    params = calc_common.load_params()
+    values = _offer_data(calc, params, commercial['waste'], commercial['overhead'], commercial['margin'])
+    for pos, material, direct, _ in values['rows']:
+        pos.update(material_cost_chf=material, direct_position_cost_chf=direct)
+    pc = calc['project_cost']
+    direct = round(values['direct'] + values['services'] + values['allowances'], 2)
+    pc.update(positions_direct_cost_chf=values['direct'], project_direct_cost_chf=direct,
+              overhead_chf=round(values['baseline']-direct, 2), cost_baseline_chf=values['baseline'],
+              indicative_selling_price_chf=values['price'])
+    pc['allowances_chf'] = dict(values['allowance_lines'], total_chf=values['allowances'])
+    calc['example_subset_summary'] = {'material_cost_chf':values['material'], 'labour_cost_chf':values['labour'],
+        'direct_cost_chf':values['direct'], 'cost_baseline_chf':round(values['direct'] *
+            (1 + params['allowances']['transport_equipment_pct']/100) * (1 + commercial['overhead']/100), 2)}
+    params['allowances']['material_waste_pct'] = commercial['waste']
+    params['commercial']['overhead_pct'] = commercial['overhead']
+    # Keep the configured reference margin so changing the bid moves its forecast.
+    prediction.enrich(calc, params)
+    return calc, params
+
+
+def finalise_tender(tid, body):
+    if not tid_valid(tid):
+        raise ValueError('Invalid tender')
+    with feedback_core._lock(TENDERS/tid/'lifecycle'):
+        meta = load_meta(tid)
+        if is_finalised(meta):
+            return meta
+        if not calc_path(tid).exists():
+            raise ValueError('Upload positions and calculate this tender first.')
+        values = commercial_values(body)
+        if body.get('edits'):
+            apply_edits(tid, body['edits'])
+        # Keep the commercial choices for reloads and later retrospective reports.
+        meta.update(lifecycle='finalised', finalised_at=datetime.now(timezone.utc).isoformat(),
+                    final_commercial=values)
+        save_meta(meta)
+        return meta
+
+
+def completion_documents(tid):
+    path = TENDERS/tid/'completion_documents'/'manifest.json'
+    return json.loads(path.read_text()) if path.exists() else []
 
 
 def create_tender(name: str) -> dict:
@@ -109,7 +178,7 @@ def list_tenders() -> list:
 
 # app settings - LoRA model selection per task (backend connects later)
 TASK_KEYS = ("input_processing", "productivity_factors", "win_ratio", "market_extraction")
-BASE_MODELS = ["GLM-4.6", "GLM-4.5-Air", "Llama-3.3-70B", "Qwen3-32B"]
+BASE_MODELS = ["glm-5.3-flash", "GLM-4.6", "GLM-4.5-Air", "Llama-3.3-70B", "Qwen3-32B"]
 AI_DEMO_FACTORS = {  # demo suggestions until the productivity LoRA connects
     "site_efficiency": 0.92, "school_logistics": 1.05,
     "mounting_height_school": 1.08, "mounting_height_sports_hall": 1.20,
@@ -117,7 +186,7 @@ AI_DEMO_FACTORS = {  # demo suggestions until the productivity LoRA connects
 }
 
 DEFAULT_SETTINGS = {
-    "base_model": "GLM-4.6",
+    "base_model": "glm-5.3-flash",
     "tasks": {
         "input_processing": {"versions": [],
                              "selected": None, "links": ""},
@@ -135,9 +204,9 @@ def _norm_settings(data) -> dict:
     Versions trained for another base model stay stored but are not selectable
     (they would need retraining)."""
     data = data if isinstance(data, dict) else {}
-    base = str(data.get("base_model") or DEFAULT_SETTINGS["base_model"]).strip()[:80]
-    if base not in BASE_MODELS:
-        base = DEFAULT_SETTINGS["base_model"]
+    base = str(data.get("base_model") or DEFAULT_SETTINGS["base_model"]).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", base):
+        raise ValueError("Use a provider model ID containing letters, numbers, dots, hyphens, underscores or slashes.")
 
     tasks_in = data.get("tasks")
     if isinstance(tasks_in, dict):
@@ -230,6 +299,36 @@ def save_ui_settings(data: dict) -> dict:
     return settings
 
 
+def training_overview() -> dict:
+    """Small, reviewable source inventory; raw API documents stay in artifacts."""
+    records = PREPARATION_JOBS.public_records()
+    uploads = []
+    for task in TASK_KEYS:
+        for path in sorted((UPLOADS / 'lora_data').glob(task + '_*')):
+            try:
+                rows = read_upload(path.read_bytes(), task)
+                uploads.append({'task':task, 'file':path.name, 'records':len(rows),
+                                'projects':len({r['project_id'] for r in rows})})
+            except (ValueError, UnicodeError) as exc:
+                uploads.append({'task':task, 'file':path.name, 'records':0, 'error':str(exc)})
+    sources = []
+    for record in sorted(records, key=lambda r:r.get('publication_date') or '', reverse=True):
+        provenance = record.get('provenance', {})
+        sources.append({**{key:record.get(key) for key in ('publication_id','title', 'record_type',
+            'publication_date','buyer', 'canton')}, 'url':provenance.get('source_url'),
+            'retrieved_at':provenance.get('retrieved_at'), 'sha256':provenance.get('sha256')})
+    sponsor_count = 0
+    if PREPARATION_JOBS.materials_dir:
+        from prepare_sponsor import sponsor_examples
+        sponsor_count = len(sponsor_examples(PREPARATION_JOBS.materials_dir))
+    return {'sources':sources, 'uploads':uploads, 'sponsor_records':sponsor_count,
+            'jobs':PREPARATION_JOBS.list(), 'default_model':'glm-5.3-flash',
+            'provider':{'status':'awaiting_contract',
+                'endpoint_configured':bool(os.environ.get('AUTOTENDER_TRAINING_ENDPOINT')),
+                'credential_configured':bool(os.environ.get('AUTOTENDER_TRAINING_API_KEY')),
+                'message':'Dataset preparation is available. Remote training awaits the provider endpoint and LoRA API contract.'}}
+
+
 def run_steps(calc_out: Path, scripts: list, positions_csv: Path | None = None,
               factors: dict | None = None) -> str:
     env = dict(os.environ, AUTOTENDER_CALC_OUT=str(calc_out))
@@ -262,6 +361,14 @@ def apply_edits(tid: str, edits: dict) -> dict:
     rules for quantity); an explicit labour_cost_chf is kept as an override
     until the next rules-based recompute."""
     meta = load_meta(tid)
+    if is_finalised(meta):
+        raise ValueError('Reopen the tender before editing the estimate.')
+    if not isinstance(edits, dict) or any(not isinstance(fields, dict) for fields in edits.values()):
+        raise ValueError('Position edits must map IDs to numeric fields')
+    for fields in edits.values():
+        for key, value in fields.items():
+            if key in EDITABLE_FIELDS and (value is None or feedback_core._number(value, key, positive=False) < 0):
+                raise ValueError(f'{key} must be a nonnegative finite number')
     calc = json.loads(calc_path(tid).read_text())
     rules = calc_common.load_productivity()
     params = calc_common.load_params()
@@ -475,9 +582,10 @@ def _offer_data(calc: dict, params: dict, waste: float, overhead: float,
     alw = params["allowances"]
     pcosts = params["project_costs"]
     pf = params["productivity_factors"]
-    allowances = r2f(material * alw["small_material_pct"] / 100
-                     + supplier_material * alw["supplier_package_contingency_pct"] / 100
-                     + direct * alw["transport_equipment_pct"] / 100)
+    allowance_lines = {'small_material_chf':material * alw['small_material_pct'] / 100,
+        'supplier_package_contingency_chf':supplier_material * alw['supplier_package_contingency_pct'] / 100,
+        'transport_equipment_chf':direct * alw['transport_equipment_pct'] / 100}
+    allowances = r2f(sum(allowance_lines.values()))
     baseline = r2f((direct + services + allowances) * (1 + overhead / 100))
     price = r2f(baseline / (1 - margin / 100))
     chf = lambda x: f"{x:,.2f}"
@@ -541,6 +649,7 @@ def _offer_data(calc: dict, params: dict, waste: float, overhead: float,
              f"competitiveness and contribution can be balanced deliberately."),
         ]
     return {"rows": rows, "material": material, "labour": labour, "direct": direct,
+            "allowance_lines":{k:r2f(v) for k,v in allowance_lines.items()},
             "services": services, "allowances": allowances, "baseline": baseline,
             "price": price, "n": n, "review": review, "src": src, "steps": steps,
             "chf": chf, "num": num, "hp": hide_params, "hn": hide_notes}
@@ -683,7 +792,7 @@ def pdf_report(calc: dict, params: dict, waste: float, overhead: float,
     for i, page in enumerate(pages, 1):
         page.rect(MARGIN, 66, PAGE_W - 2 * MARGIN, 0.7, BORDER)
         page.text(MARGIN, 56,
-                  f"Equans AutoTender - {calc['project']['name']} - generated "
+                  f"Tendif - {calc['project']['name']} - generated "
                   f"{time.strftime('%d %b %Y %H:%M')}", "F1", 6.3, MUTED, max_w=420)
         page.text(PAGE_W - MARGIN, 56, f"Page {i} / {len(pages)}",
                   "F1", 6.3, MUTED, align="right")
@@ -765,7 +874,7 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
              f"quotations - budget rates used</span>" if d["review"]
              else f'<span class="chip ok">All {n} positions priced from firm catalog rates</span>'))
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<title>Equans AutoTender - {e(calc["project"]["name"])}</title><style>{css}</style></head><body>
+<title>Tendif - {e(calc["project"]["name"])}</title><style>{css}</style></head><body>
 <div class="band">
   <div><div class="k">TENDER CALCULATION</div>
     <h1>{e(calc["project"]["name"])}</h1>
@@ -784,7 +893,7 @@ def html_report(calc: dict, params: dict, waste: float, overhead: float,
     <th>NET/UNIT</th><th>MATERIAL</th><th>HOURS</th><th>LABOUR</th><th>DIRECT</th>
     <th>STATUS</th></tr></thead>
   <tbody>{table_rows}</tbody></table>
-  <footer>Equans AutoTender - {e(calc["project"]["name"])} - generated
+  <footer>Tendif - {e(calc["project"]["name"])} - generated
     {time.strftime("%d %b %Y %H:%M")}</footer>
 </div></body></html>"""
 
@@ -871,7 +980,7 @@ def docx_report(calc: dict, params: dict, waste: float, overhead: float,
             cell(status, align="right", width=1000, color=status_color),
         ]) + "</w:tr>")
     body.append(f"<w:tbl><w:tblPr>{borders}</w:tblPr>{''.join(trs)}</w:tbl>")
-    body.append(para(f"Equans AutoTender - {calc['project']['name']} - generated "
+    body.append(para(f"Tendif - {calc['project']['name']} - generated "
                      f"{time.strftime('%d %b %Y %H:%M')}", size=13, color="6B7280", after=0))
     body.append('<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
                 '<w:pgMar w:top="1000" w:right="720" w:bottom="1000" w:left="720"/></w:sectPr>')
@@ -933,7 +1042,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body_json(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length) or b"{}")
+        if not 0 <= length <= 5*1024*1024:
+            raise ValueError('JSON requests must be at most 5 MB')
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise ValueError('Incomplete request')
+        value = json.loads(raw or b'{}')
+        if not isinstance(value, dict):
+            raise ValueError('JSON request must be an object')
+        return value
 
     def do_GET(self):
         url = urlparse(self.path)
@@ -941,6 +1058,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/":
                 self._send(200, INDEX.read_bytes(), "text/html; charset=utf-8")
+            elif url.path in ('/static/training.js', '/static/training.css', '/static/workspace.css', '/static/learning.js'):
+                asset = BASE / 'static' / parts[-1]
+                self._send(200, asset.read_bytes(), 'text/javascript; charset=utf-8' if asset.suffix == '.js' else 'text/css; charset=utf-8')
+            elif url.path == '/api/training':
+                self._json(200, training_overview())
+            elif parts[:2] == ['api','tenders'] and len(parts) in (4,5) and parts[3] == 'completion-documents':
+                tid = parts[2]
+                if not tid_valid(tid):
+                    raise ValueError('Invalid tender')
+                load_meta(tid)
+                documents = completion_documents(tid)
+                if len(parts) == 4:
+                    self._json(200, {'documents':documents})
+                else:
+                    entry = next((d for d in documents if d['id'] == parts[4]), None)
+                    if entry is None:
+                        raise FileNotFoundError('Document not found')
+                    path = TENDERS/tid/'completion_documents'/entry['id']
+                    self._send(200, path.read_bytes(), 'application/octet-stream',
+                        {'Content-Disposition':"attachment; filename*=UTF-8''" + quote(entry['name']),
+                         'X-Content-Type-Options':'nosniff'})
+            elif parts[:2] == ['api','training'] and len(parts) == 4 and parts[3] == 'preview':
+                split = parse_qs(url.query).get('split', ['train'])[0]
+                if split not in ('train','validation','test'):
+                    raise ValueError('Unknown dataset split')
+                path = PREPARATION_JOBS.artifact(parts[2], split + '.jsonl')
+                import itertools
+                with path.open() as file:
+                    rows = [json.loads(line) for line in itertools.islice(file, 3)]
+                evidence = path.parent / 'examples.json'
+                metadata = json.loads(evidence.read_text()) if evidence.exists() else []
+                self._json(200, {'split':split, 'examples':rows,
+                    'evidence':[r for r in metadata if r['split'] == split][:3]})
             elif parts[:2] == ["api", "tenders"] and len(parts) == 2:
                 self._json(200, list_tenders())
             elif parts[:3] == ["api", "settings", "dataset-format"] and len(parts) == 3:
@@ -962,6 +1112,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, settings)
             elif url.path == "/api/feedback/monitoring":
                 self._json(200, feedback_monitoring.monitor_tenders(TENDERS))
+            elif parts[:3] == ['api','feedback','reviews']:
+                if len(parts) == 3:
+                    self._json(200, {'reviews':FEEDBACK_REVIEWS.list()})
+                elif len(parts) == 4:
+                    self._json(200, FEEDBACK_REVIEWS.get(parts[3]))
+                elif len(parts) == 6 and parts[4] == 'artifacts':
+                    path = FEEDBACK_REVIEWS.artifact(parts[3], parts[5])
+                    self._send(200, path.read_bytes(), 'application/octet-stream',
+                        {'Content-Disposition':f'attachment; filename="{path.name}"'})
+                else:
+                    self._json(404, {'error':'Unknown review path'})
             elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] in ("feedback", "postmortem"):
                 tid = parts[2]
                 if not tid_valid(tid):
@@ -975,7 +1136,7 @@ class Handler(BaseHTTPRequestHandler):
                     if fmt not in ("md", "html", "pdf"):
                         raise ValueError("report format must be md, html or pdf")
                     feedback_core.analyze(folder)
-                    report = folder / "feedback" / "reports" / ("postmortem." + ("md" if fmt == "pdf" else fmt))
+                    report = folder / "feedback" / "reports" / ("postmortem." + ("txt" if fmt == "pdf" else fmt))
                     content = report.read_bytes()
                     if fmt == "pdf":
                         pages, page, y = [], Page(), 785
@@ -1018,21 +1179,26 @@ class Handler(BaseHTTPRequestHandler):
                            {"Content-Disposition": f'attachment; filename="{src.name}"'})
             elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] == "pdf":
                 tid = parts[2]
-                calc = json.loads(calc_path(tid).read_text())
-                params = calc_common.load_params()
-                descriptions = {}
-                if positions_path(tid).exists():  # client-facing text from the upload
-                    with positions_path(tid).open(newline="") as f:
-                        descriptions = {r["lv_id"]: r.get("description", "")
-                                        for r in csv.DictReader(f)}
+                if not tid_valid(tid):
+                    raise ValueError('Invalid tender')
                 q = parse_qs(url.query)
-                num = lambda key, default: float(q.get(key, [default])[0])
-                waste = num("waste", params["allowances"]["material_waste_pct"])
-                overhead = num("overhead", params["commercial"]["overhead_pct"])
-                margin = num("margin", params["commercial"]["target_margin_pct"])
+                if q.get('offer'):
+                    offer = feedback_core.read_offer(TENDERS/tid, q['offer'][0])
+                    calc, params, descriptions = offer['calc'], offer['params'], offer['descriptions']
+                    commercial = offer['commercial']
+                else:
+                    commercial = commercial_values({k:v[0] for k,v in q.items()})
+                    calc, params = commercial_calculation(tid, commercial)
+                    descriptions = {}
+                    if positions_path(tid).exists():
+                        with positions_path(tid).open(newline='') as f:
+                            descriptions = {r['lv_id']:r.get('description','') for r in csv.DictReader(f)}
+                waste, overhead, margin = (commercial[k] for k in ('waste','overhead','margin'))
                 fmt = (q.get("format") or ["pdf"])[0]
-                hide = bool(q.get("hide"))
-                hide_notes = bool(q.get("hide_notes"))
+                if fmt not in ('pdf','html','docx'):
+                    raise ValueError('Unknown offer format')
+                hide = q.get('hide') == ['1']
+                hide_notes = q.get('hide_notes') == ['1']
                 offer_disp = _offer_disposition(load_meta(tid), fmt)
                 if fmt == "html":
                     if q.get("inline"):
@@ -1055,7 +1221,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._json(400, {"error": str(e)})
         except FileNotFoundError:
-            self._json(404, {"error": "tender not found"})
+            self._json(404, {"error": "Requested tender, job or artifact not found"})
         except Exception as e:
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
 
@@ -1063,26 +1229,93 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         parts = [p for p in url.path.split("/") if p]
         try:
-            if url.path == "/api/feedback/evaluate":
-                result = feedback_monitoring.evaluate_candidate(self._body_json().get("records", []))
-                result["review_id"] = uuid.uuid4().hex
-                feedback_core._atomic(FEEDBACK_DIR / "output" / "evaluations" / (result["review_id"] + ".json"), result)
-                self._json(200, result)
-            elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] in ("submission", "outcome", "gather-evidence", "export-feedback", "productivity-feedback"):
+            if url.path == '/api/training/collect':
+                body = self._body_json()
+                job = PREPARATION_JOBS.start_collection(body.get('urls', []), body.get('search_hvac') is True)
+                self._json(202, {'ok':True, 'job':job})
+            elif parts[:2] == ['api','tenders'] and len(parts) == 4 and parts[3] in ('finalise','reopen','completion-documents'):
+                tid, action = parts[2], parts[3]
+                if not tid_valid(tid):
+                    raise ValueError('Invalid tender')
+                meta = load_meta(tid)
+                if action == 'finalise':
+                    self._json(200, {'ok':True, 'meta':finalise_tender(tid, self._body_json())})
+                elif action == 'reopen':
+                    with feedback_core._lock(TENDERS/tid/'lifecycle'):
+                        meta = load_meta(tid)
+                        meta['lifecycle'] = 'active'
+                        save_meta(meta)
+                    self._json(200, {'ok':True, 'meta':meta})
+                else:
+                    if not is_finalised(meta):
+                        raise ValueError('Finalise the tender before adding outcome documents.')
+                    name = Path(parse_qs(url.query).get('name', ['document'])[0]).name
+                    if Path(name).suffix.lower() not in ('.pdf','.docx','.txt','.csv','.png','.jpg','.jpeg'):
+                        raise ValueError('Choose a PDF, Word document, image, CSV or text file.')
+                    length = int(self.headers.get('Content-Length', 0))
+                    if not 0 < length <= 20*1024*1024:
+                        raise ValueError('Documents must be between 1 byte and 20 MB.')
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise ValueError('Upload incomplete. Please try again.')
+                    directory = TENDERS/tid/'completion_documents'
+                    entry = {'id':uuid.uuid4().hex, 'name':name[:200], 'size':length,
+                        'sha256':hashlib.sha256(raw).hexdigest(), 'uploaded_at':datetime.now(timezone.utc).isoformat()}
+                    with feedback_core._lock(directory):
+                        documents = completion_documents(tid)
+                        (directory/entry['id']).write_bytes(raw)
+                        documents.append(entry)
+                        feedback_core._atomic(directory/'manifest.json', documents)
+                    self._json(201, {'ok':True, 'documents':documents, 'document':entry})
+            elif url.path == '/api/training/prepare':
+                body = self._body_json()
+                model = _norm_settings({'base_model':body.get('base_model')})['base_model']
+                job = PREPARATION_JOBS.start(body.get('task'), model, '', UPLOADS/'lora_data',
+                    include_existing=body.get('include_existing') is True)
+                self._json(202, {'ok':True, 'job':job})
+            elif url.path == "/api/feedback/evaluate":
+                self._json(200, FEEDBACK_REVIEWS.evaluate_external(self._body_json().get('records', [])))
+            elif url.path == '/api/feedback/reviews':
+                self._body_json()
+                self._json(201, FEEDBACK_REVIEWS.prepare(TENDERS, load_ui_settings()['base_model']))
+            elif parts[:3] == ['api','feedback','reviews'] and len(parts) == 5 and parts[4] == 'evaluate':
+                self._json(200, FEEDBACK_REVIEWS.evaluate(parts[3], TENDERS, self._body_json()))
+            elif parts[:2] == ['api','tenders'] and len(parts) == 4 and parts[3] == 'offers':
+                tid, body = parts[2], self._body_json()
+                if not tid_valid(tid):
+                    raise ValueError('Invalid tender')
+                commercial = commercial_values(body)
+                with feedback_core._lock(TENDERS/tid/'lifecycle'):
+                    meta = load_meta(tid)
+                    if body.get('edits'):
+                        apply_edits(tid, body['edits'])
+                    calc, params = commercial_calculation(tid, commercial)
+                    with positions_path(tid).open(newline='') as f:
+                        descriptions = {r['lv_id']:r.get('description','') for r in csv.DictReader(f)}
+                    offer = feedback_core.capture_offer(TENDERS/tid, calc, params, commercial, descriptions, is_finalised(meta))
+                self._json(201, {'id':offer['id'], 'captured_at':offer['captured_at'], 'bid_amount_chf':offer['bid_amount_chf']})
+            elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] in ("submission", "outcome", "gather-evidence", "export-feedback", "productivity-feedback", "revoke-productivity"):
                 tid, action = parts[2], parts[3]
                 if not tid_valid(tid):
                     raise ValueError("invalid tender id")
                 meta = load_meta(tid)
                 folder, body = TENDERS / tid, self._body_json()
                 if action == "submission":
-                    calc = json.loads(calc_path(tid).read_text())
-                    prediction.enrich(calc, calc_common.load_params())
-                    result = feedback_core.capture_submission(folder, calc, calc_common.load_params(), body)
+                    if body.get('offer_id'):
+                        result = feedback_core.confirm_offer_submission(folder, body)
+                    else:
+                        if is_finalised(meta):
+                            body['retrospective'] = True
+                        commercial = commercial_values(meta.get('final_commercial') or {'margin':body.get('margin_pct', calc_common.load_params()['commercial']['target_margin_pct'])})
+                        calc, params = commercial_calculation(tid, commercial)
+                        body['margin_pct'] = commercial['margin']
+                        result = feedback_core.capture_submission(folder, calc, params, body)
                     meta["status"] = "submitted"
                     save_meta(meta)
                 elif action == "outcome":
                     result = feedback_core.record_outcome(folder, body)
                     meta["status"] = body["outcome"]
+                    meta['lifecycle'] = 'finalised'
                     save_meta(meta)
                     feedback_core.analyze(folder)
                     feedback_core.export_feedback(folder, UPLOADS / "lora_data")
@@ -1091,6 +1324,8 @@ class Handler(BaseHTTPRequestHandler):
                     feedback_core.analyze(folder)
                 elif action == "productivity-feedback":
                     result = feedback_productivity.record_measurement(folder, UPLOADS / "lora_data", calc_common.load_params(), body)
+                elif action == 'revoke-productivity':
+                    result = feedback_productivity.revoke_measurement(folder, UPLOADS/'lora_data', body)
                 else:
                     result = feedback_core.export_feedback(folder, UPLOADS / "lora_data")
                 self._json(200, {"ok": True, "result": result, "feedback": feedback_core.overview(folder)})
@@ -1153,13 +1388,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._upload(parts[2], parse_qs(url.query))
             elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] == "recalc":
                 tid = parts[2]
+                if is_finalised(load_meta(tid)):
+                    raise ValueError('Reopen the tender before recalculating.')
                 if not positions_path(tid).exists():
                     self._json(400, {"error": "no positions csv uploaded for this tender"})
                     return
                 out = calc_tender(tid)
                 self._json(200, {"ok": True, "message": out})
             elif parts[:2] == ["api", "tenders"] and len(parts) == 4 and parts[3] == "values":
-                result = apply_edits(parts[2], self._body_json().get("edits", {}))
+                if not tid_valid(parts[2]):
+                    raise ValueError('Invalid tender')
+                body = self._body_json()
+                with feedback_core._lock(TENDERS/parts[2]/'lifecycle'):
+                    result = apply_edits(parts[2], body.get('edits', {}))
                 self._json(200, {"ok": True, "message": f"{result.pop('_edited_positions')} position(s) updated",
                                  "calc": result})
             else:
@@ -1175,6 +1416,9 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in urlparse(self.path).path.split("/") if p]
         try:
             if parts[:2] == ["api", "tenders"] and len(parts) == 3 and tid_valid(parts[2]):
+                with feedback_core._lock(UPLOADS/'lora_data'):
+                    for task in ('win_ratio','productivity_factors'):
+                        (UPLOADS/'lora_data'/f'{task}_feedback_{parts[2]}.jsonl').unlink(missing_ok=True)
                 shutil.rmtree(TENDERS / parts[2], ignore_errors=True)
                 self._json(200, {"ok": True})
             else:
@@ -1186,6 +1430,8 @@ class Handler(BaseHTTPRequestHandler):
         # raw-body upload (filename via query param): avoids multipart parsing,
         # which the stdlib cgi module used to provide (removed in Python 3.13)
         load_meta(tid)  # 404 if unknown
+        if is_finalised(load_meta(tid)):
+            raise ValueError('Reopen the tender before replacing its source file.')
         name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(unquote(q.get("name", ["upload"])[0])).name)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
@@ -1227,7 +1473,7 @@ def main():
     except OSError as e:
         sys.exit(f"cannot bind port {port} ({e}) - try another one, "
                  f"e.g. python3 server.py {port + 1}")
-    print(f"AutoTender UI: http://127.0.0.1:{port}  "
+    print(f"Tendif UI: http://127.0.0.1:{port}  "
           f"({len(list_tenders())} tender(s), Ctrl+C to stop)")
     try:
         srv.serve_forever()

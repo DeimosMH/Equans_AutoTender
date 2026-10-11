@@ -7,14 +7,17 @@ Parameters below are application choices, not statistically validated guarantees
 import hashlib
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from statistics import median
+import core
 
 
 def _date(value):
     result = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-    return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result.astimezone(timezone.utc)
+    if result.tzinfo is None:
+        raise ValueError('timestamps must include a timezone')
+    return result.astimezone(timezone.utc)
 
 
 def _probability(value):
@@ -77,16 +80,16 @@ def monitor_tenders(tenders_root):
         if not submission_path.exists() or not outcome_path.exists():
             continue
         try:
-            submission = json.loads(submission_path.read_text())
-            outcome = json.loads(outcome_path.read_text())
-            snapshot_hash = hashlib.sha256(json.dumps({k:v for k,v in submission.items() if k != 'hash'},
-                sort_keys=True,ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode()).hexdigest()
-            if submission.get('hash') != snapshot_hash or outcome.get('submission_hash') != snapshot_hash:
-                raise ValueError('submission integrity or outcome snapshot linkage failed')
-            if outcome.get('revision') is not None:
-                archive = folder/'feedback'/'outcome_revisions'/f"{int(outcome['revision']):06d}.json"
-                if not archive.is_file() or json.loads(archive.read_text()) != outcome:
-                    raise ValueError('outcome revision archive integrity failed')
+            with core._lock(folder/'feedback'):
+                submission = core._snapshot(folder/'feedback')
+                outcome = json.loads(outcome_path.read_text())
+                submission_digest = hashlib.sha256(submission_path.read_bytes()).hexdigest()
+                outcome_digest = hashlib.sha256(outcome_path.read_bytes()).hexdigest()
+                if outcome.get('revision') is not None:
+                    core._outcome(folder/'feedback')
+            snapshot_hash = submission['hash']
+            if outcome.get('submission_hash') != snapshot_hash:
+                raise ValueError('outcome snapshot linkage failed')
             if outcome.get('verified') is not True:
                 raise ValueError('outcome is not verified')
             label = outcome.get('outcome')
@@ -98,9 +101,9 @@ def monitor_tenders(tenders_root):
             if not outcome.get('evidence_reference'):
                 raise ValueError('verified outcome requires evidence_reference')
             row = {'tender_id':folder.name,'outcome':label,'observed_at':observed.isoformat(),
+                   'submission_hash':snapshot_hash,'outcome_revision':outcome.get('revision'),
                    'submitted_at':submitted.isoformat(),'evidence_reference':outcome['evidence_reference'],
-                   'submission_sha256':hashlib.sha256(submission_path.read_bytes()).hexdigest(),
-                   'outcome_sha256':hashlib.sha256(outcome_path.read_bytes()).hexdigest()}
+                   'submission_sha256':submission_digest, 'outcome_sha256':outcome_digest}
             completed.append(row)
             try:
                 if submission.get('training_eligible') is not True or _date(submission['captured_at']) >= observed:
@@ -173,6 +176,8 @@ def evaluate_candidate(records, minimum_samples=10, margin=.02):
     if not isinstance(margin,(int,float)) or isinstance(margin,bool) or not math.isfinite(margin) or margin < 0:
         raise ValueError('margin must be nonnegative and finite')
     paired, rejected, seen, model_ids = [], [], set(), set()
+    evaluation_ids = {str(r.get('bid_id') or r.get('tender_id') or '') for r in records if isinstance(r,dict)}
+    evaluation_ids.update(str(r['project_id']) for r in records if isinstance(r,dict) and r.get('project_id'))
     for index, record in enumerate(records):
         try:
             if not isinstance(record,dict): raise ValueError('record must be object')
@@ -190,12 +195,14 @@ def evaluate_candidate(records, minimum_samples=10, margin=.02):
             if not isinstance(provenance,dict) or provenance.get('verified') is not True or not provenance.get('model_id') or not provenance.get('source'):
                 raise ValueError('explicit verified prediction provenance required')
             generated = _date(provenance['generated_at'])
+            if generated > datetime.now(timezone.utc)+timedelta(minutes=5):
+                raise ValueError('prediction generation cannot be in the future')
             mode = provenance.get('evaluation_mode','prospective')
             trained = record.get('trained_project_ids',provenance.get('trained_project_ids'))
-            if trained is not None and (not isinstance(trained,list) or key in trained or record.get('project_id',key) in trained):
+            if trained is not None and (not isinstance(trained,list) or any(not isinstance(t,str) for t in trained) or evaluation_ids.intersection(trained)):
                 raise ValueError('evaluation project overlaps training or trained_project_ids invalid')
             if mode == 'historical_backtest':
-                if trained is None or _date(provenance['training_cutoff']) >= submitted:
+                if trained is None or _date(provenance['training_cutoff']) >= submitted or _date(provenance['training_cutoff']) > generated:
                     raise ValueError('historical backtest requires held-out ids and training cutoff before submission')
             elif mode == 'prospective':
                 if generated > submitted: raise ValueError('prospective predictions must be generated by submission')

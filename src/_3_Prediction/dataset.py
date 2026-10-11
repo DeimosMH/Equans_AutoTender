@@ -80,7 +80,7 @@ def read_upload(raw, task):
 def prepare_dataset(records, task, output_dir, base_model):
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    valid, rejected, seen = [], [], set()
+    valid, rejected, seen, evidence = [], [], set(), {}
     for index, record in enumerate(records):
         try:
             normalized = validate_record(record, task)
@@ -89,6 +89,10 @@ def prepare_dataset(records, task, output_dir, base_model):
                 raise ValueError('duplicate example')
             seen.add(fingerprint)
             valid.append(normalized)
+            evidence[fingerprint] = {key:record[key] for key in (
+                'source_kind', 'provenance', 'reviewed', 'measurement_reference',
+                'bid_submitted_at', 'outcome_observed_at', 'submission_hash', 'outcome_revision',
+                'evidence_reference', 'revision', 'recorded_at', 'verified') if key in record}
         except (ValueError, TypeError) as exc:
             rejected.append({'record_index': index, 'reason': str(exc)})
     groups = sorted({r['project_id'] for r in valid}, key=lambda p: hashlib.sha256(p.encode()).hexdigest())
@@ -101,11 +105,14 @@ def prepare_dataset(records, task, output_dir, base_model):
             assignments[project] = 'test' if i < ntest else 'validation' if i < ntest+nval else 'train'
     else:
         assignments = {p: 'train' for p in groups}
-    hashes, counts = {}, {}
+    hashes, counts, examples = {}, {}, []
     for split in ('train', 'validation', 'test'):
         rows = []
         for record in sorted(valid, key=canonical):
             if assignments[record['project_id']] == split:
+                fingerprint = hashlib.sha256(canonical(record).encode()).hexdigest()
+                examples.append({'split':split, 'line':len(rows)+1, 'project_id':record['project_id'],
+                    'fingerprint':fingerprint, 'evidence':evidence[fingerprint]})
                 rows.append({'messages': [{'role':'system', 'content':f'Perform AutoTender {task}; return JSON.'},
                     {'role':'user', 'content':canonical(record['input'])},
                     {'role':'assistant', 'content':canonical(record['target'])}]})
@@ -114,6 +121,9 @@ def prepare_dataset(records, task, output_dir, base_model):
         hashes[split+'.jsonl'] = hashlib.sha256(content).hexdigest()
         counts[split] = len(rows)
     (output/'rejected.json').write_text(json.dumps(rejected, indent=2)+'\n')
+    evidence_bytes = (json.dumps(examples, ensure_ascii=False, indent=2)+'\n').encode()
+    (output/'examples.json').write_bytes(evidence_bytes)
+    hashes['examples.json'] = hashlib.sha256(evidence_bytes).hexdigest()
     blockers = []
     if len(groups) < 3:
         blockers.append('At least three distinct projects are required for train/validation/test separation.')
@@ -124,6 +134,8 @@ def prepare_dataset(records, task, output_dir, base_model):
     manifest = {'schema_version':1, 'task':task, 'base_model':base_model,
                 'status':'blocked' if blockers else 'ready_for_training', 'blockers':blockers,
                 'counts':counts, 'projects':assignments, 'hashes':hashes, 'rejected_count':len(rejected),
+                'project_count':len(groups), 'accepted_count':len(valid),
+                'split_strategy':'deterministic_project_groups',
                 'purpose':task,
                 'evaluation_required':True}
     (output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')

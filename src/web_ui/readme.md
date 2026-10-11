@@ -41,7 +41,7 @@ tool, no auth).
    then step3/step4 rebuild direct costs and summaries. **Recalculate** via
    `POST /api/tenders/<id>/recalc` re-runs the whole pipeline from the stored
    csv (manual overrides are replaced by rule values). **Download ▾** exports
-   the client-facing offer as **PDF**, **HTML** (standalone page) or **DOCX**
+   a preserved client-facing offer as **PDF**, **HTML** (standalone page) or **DOCX**
    (editable Word) - same content and numbers in all three: branded cover
    (KPI cards, indicative selling price banner, status chip, a "how this
    price is built - and why" methodology) plus the position table with
@@ -57,7 +57,7 @@ cancels).
 `tenders/<id>/` (gitignored): `meta.json` (name, status, timestamps),
 `positions.csv` (latest upload), `calc.json` (this tender's calculation),
 `tender.pdf` (raw tender upload, if any). Deleting a tender in the sidebar
-removes the directory.
+removes the directory and its current outcome/productivity training exports.
 
 ## Endpoints
 
@@ -75,32 +75,41 @@ removes the directory.
 | `GET /api/tenders/<id>/pdf?format=pdf\|html\|docx&margin&overhead&waste` | export the offer (`&inline=1` previews HTML in the tab) |
 | `DELETE /api/tenders/<id>` | delete tender |
 
+## LoRA training
+
+Open **LoRA training** in the sidebar, or `/#training`. It uses the existing
+app theme and has three compact views:
+
+- **Datasets**: choose public notices, reviewed tender matching, own bid outcomes
+  or measured productivity. Upload validated JSONL, choose existing evidence and
+  set the provider model ID (default `glm-5.3-flash`). Prepare, inspect counts and
+  blockers, preview examples by split, and download a complete ZIP bundle.
+- **Source library**: collect explicit simap URLs; optionally enable bounded
+  historical HVAC award search. Review/filter publications and source hashes.
+  New collections are reusable by later preparations.
+- **Run history**: reopen persisted collection/preparation runs and their artifacts.
+
+The model will run in cloud Docker. Its endpoint and LoRA API contract are pending;
+preparation does not submit training or activate a model. Connection requirements
+are available in a disclosure. The training workflow never asks for a key in the UI.
+See [unified context](../../PROJECT_CONTEXT.md) for boundaries and API contracts.
+
 ## Settings
 
-`⚙ Settings` manages LoRA models per task. Two clean sections plus Advanced
-(persisted via `GET/POST /api/settings` in `ui_settings.json`, gitignored):
+Settings retains editable productivity factors and appearance. Monitoring and
+candidate evaluation are under a disclosure. The target model for a new dataset
+is entered directly in Training. Legacy model/path settings remain stored but
+are no longer shown as controls.
+AI productivity factors are demo values until a trained adapter is integrated.
+Manual and demo factors both remain editable and feed the calculator.
 
-- **LoRA per task** - one row each for *Input processing*, *Productivity
-  factors*, *Win-ratio prediction* and *Public notice extraction*; the selector lists that task's LoRA
-  versions (dates) or `none`. Only versions trained for the current base
-  model are listed - the rest stay stored but need retraining.
-- **Update LoRAs** - the same three rows, each with **Upload data**
-  (training data file, stored under `uploads/lora_data/`), a
-  *provide links for tenders* field, and **Prepare dataset**, which creates a persisted asynchronous job, validates
-  JSONL task data, collects provided simap links plus bounded historical awards,
-  and exposes status and downloadable datasets/manifests. Preparation does not
-  register or activate a LoRA. The future training endpoint contract is pending.
-- **Advanced** - the base model (changing it changes which versions are
-  available) and the model paths (models / loras / cache dirs).
-- **Productivity factors** - **Manual** (your values, defaults from
-  `project_parameters.json`) or **AI** (suggestions of the assigned
-  productivity LoRA - demo values until the backend connects); either way
-  every parameter stays editable. The active mode's values flow into every
-  calculation via the `AUTOTENDER_FACTORS` env override on `_2_Calculator`
-  step2 (and the server-side edit recompute); the scenario card shows the
-  active mode.
-- **Appearance** - a dark mode toggle; applies to the whole app instantly and
-  persists per browser (localStorage).
+Tender edits are retained in memory when visiting Settings or Training and
+returning to the same tender; Save changes persists them. Refreshing the browser
+still requires saving first. Reloading reopens the selected tender. Saving
+positions preserves the current margin, overhead and waste controls.
+
+For isolated review/tests, set `AUTOTENDER_UI_DATA_DIR` to a new directory. It holds
+tenders, uploads, settings, jobs and feedback reviews; the default location remains this directory.
 
 ## Notes / limitations
 
@@ -116,14 +125,61 @@ removes the directory.
   `GET /api/settings/jobs/<id>/artifacts/<filename>`.
 - Prediction: `GET /api/tenders/<id>/wincurve?baseline=<CHF>`.
 
-Preparation can reuse the archived public corpus and sponsor matching examples
-through the checked **Use collected data and sponsor examples** option.
+Preparation reuses public corpus for Public notices and sponsor examples for
+Tender matching; other tasks use their own reviewed uploads and feedback.
 
 ## Outcome feedback
 
-Calculated tenders include a **Bid outcome and learning** panel. Record submission
-before outcome, confirm evidence and record debrief reasons or comparable competitor
-prices. Reports download as Markdown/HTML/PDF. Verified own bid outcomes and measured
-productivity feed the appropriate `_3` task uploads; they do not train automatically.
-Settings includes diagnostic monitoring and held-out candidate evaluation.
+Active tenders show pricing and positions. **Tender finalised** saves pending
+position edits and commercial choices, locks the estimate, and opens **Tender
+outcome** at the top. Upload supporting documents, record the result and actual
+submission date, choose the downloaded offer actually submitted (or enter another
+offer manually), and correct the outcome later. Decision details, public
+notices and measured productivity are collapsed. **Reopen tender** restores editing
+without discarding the outcome or its documents.
+
+Files are stored under `tenders/<id>/completion_documents/` with opaque IDs,
+original names and hashes; PDFs, DOCX, text, CSV and images up to 20 MB are accepted.
+They download as attachments; uploading a document does not parse or train on it.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/tenders/<id>/finalise` `{edits, margin, overhead, waste}` | Save and finalise the estimate |
+| `POST /api/tenders/<id>/reopen` | Resume editing |
+| `GET /api/tenders/<id>/completion-documents` | List supporting documents |
+| `POST /api/tenders/<id>/completion-documents?name=<file>` | Upload an outcome document |
+| `GET /api/tenders/<id>/completion-documents/<document-id>` | Download a document |
+
+Downloading saves pending position edits and freezes the chosen calculation,
+price and forecast automatically. Repeated downloads of an unchanged offer reuse
+the snapshot. The finalised form offers these preserved bids for confirmation;
+choosing one restores its price. An existing immutable submission is preserved.
+Manually entering another offer after completion is retrospective and excluded
+from win-probability training and calibration. Downloads first made after completion
+are also excluded. Verified outcomes with a genuine prior snapshot and measured
+productivity feed their corresponding `_3` uploads. Reports remain available as
+Markdown/HTML/PDF; the UI links to PDF. No training runs automatically.
+Measured factors reload for correction and can be excluded from learning.
+Settings → **Learning from completed tenders** contains compact monitoring,
+evaluation bundle preparation, result import and saved review history. It checks
+candidate results against frozen local references, while keeping outcome labels
+out of the cloud inference bundle. The endpoint is still pending; no remote job
+is submitted and no adapter is activated.
 See [recursive improvement documentation](../_4_RecursiveImprovement/readme.md).
+
+## Verification
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+# With Playwright, Chromium and PyYAML installed in the test environment:
+python3 tests/browser_training.py
+python3 tests/browser_feedback.py
+```
+
+The browser check uses temporary storage and covers preparation, previews,
+downloads, uploads, navigation, tender editing, finalisation/reopening, persisted
+outcome corrections, evidence documents, safe rendering of CSV text, dark mode
+and responsive layouts.
+
+The feedback browser check also covers bound candidate imports, rejection of invalid
+responses, persisted review results, downloads and light/dark/mobile layouts.

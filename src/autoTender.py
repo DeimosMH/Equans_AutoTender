@@ -18,6 +18,8 @@ from jobs import JobStore
 sys.path.insert(0, str(BASE/"_4_RecursiveImprovement"))
 import core as feedback_core
 import monitoring as feedback_monitoring
+import productivity as feedback_productivity
+from evaluation import ReviewStore
 
 
 def main():
@@ -35,19 +37,23 @@ def main():
     prepare.add_argument('--jobs', type=Path, default=BASE/'_3_Prediction/output/cli_jobs')
     prepare.add_argument('--exclude-existing', action='store_true')
     feedback = commands.add_parser('feedback', help='Record or analyze tender outcomes')
-    feedback.add_argument('action', choices=('submission','outcome','analyze','gather','export','monitor','evaluate'))
+    feedback.add_argument('action', choices=('submission','outcome','analyze','gather','export','monitor','evaluate','prepare-review','review','productivity','revoke-productivity'))
     feedback.add_argument('--folder', type=Path, default=BASE/'web_ui/tenders')
     feedback.add_argument('--data', type=Path, help='JSON action payload or candidate records list')
     feedback.add_argument('--uploads', type=Path, default=BASE/'web_ui/uploads/lora_data')
+    feedback.add_argument('--reviews', type=Path, default=BASE/'web_ui/feedback_reviews')
+    feedback.add_argument('--base-model', default='glm-5.3-flash')
+    feedback.add_argument('--review-id')
     args = parser.parse_args()
     if args.command == 'feedback':
         body = json.loads(args.data.read_text()) if args.data else {}
         folder = args.folder.resolve()
+        reviews = ReviewStore(args.reviews)
         if args.action == 'submission':
             from predict import enrich
             params = json.loads((BASE/'_2_Calculator/data/project_parameters.json').read_text())
             calc = enrich(json.loads((folder/'calc.json').read_text()),params)
-            result = feedback_core.capture_submission(folder,calc,params,body)
+            result = feedback_core.confirm_offer_submission(folder,body) if body.get('offer_id') else feedback_core.capture_submission(folder,calc,params,body)
         elif args.action == 'outcome':
             result = feedback_core.record_outcome(folder,body)
             feedback_core.analyze(folder)
@@ -57,7 +63,13 @@ def main():
             feedback_core.analyze(folder)
         elif args.action == 'export': result = feedback_core.export_feedback(folder,args.uploads)
         elif args.action == 'monitor': result = feedback_monitoring.monitor_tenders(folder)
-        elif args.action == 'evaluate': result = feedback_monitoring.evaluate_candidate(body if isinstance(body,list) else body.get('records',[]))
+        elif args.action == 'evaluate': result = reviews.evaluate_external(body if isinstance(body,list) else body.get('records',[]))
+        elif args.action == 'prepare-review': result = reviews.prepare(folder,args.base_model)
+        elif args.action == 'review': result = reviews.evaluate(args.review_id,folder,body)
+        elif args.action == 'productivity':
+            params = json.loads((BASE/'_2_Calculator/data/project_parameters.json').read_text())
+            result = feedback_productivity.record_measurement(folder,args.uploads,params,body)
+        elif args.action == 'revoke-productivity': result = feedback_productivity.revoke_measurement(folder,args.uploads,body)
         else: result = feedback_core.analyze(folder)
         print(json.dumps(result,indent=2))
         return 0

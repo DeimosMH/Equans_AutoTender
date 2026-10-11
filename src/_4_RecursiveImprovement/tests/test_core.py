@@ -48,6 +48,37 @@ class FeedbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'after an outcome'):
             self.capture()
 
+    def test_downloads_deduplicate_and_confirmation_keeps_original_evidence(self):
+        commercial={'margin':5,'overhead':8.5,'waste':4}
+        with patch.object(core,'_now',return_value='2024-01-01T00:00:00Z'):
+            offer=core.capture_offer(self.folder,self.calc,self.params,commercial,{'LV1':'Original'})
+        repeated=core.capture_offer(self.folder,self.calc,self.params,commercial,{'LV1':'Original'})
+        self.assertEqual(repeated,offer)
+        self.assertIsNone(core.overview(self.folder)['submission'])
+        self.calc['project_cost']['cost_baseline_chf']=200000
+        later=core.capture_offer(self.folder,self.calc,self.params,commercial,{},completed=True)
+        self.assertNotEqual(offer['id'],later['id'])
+        for payload in ({'submitted_at':'2023-12-31T00:00:00Z'},
+                        {'submitted_at':'2024-01-02T00:00:00Z','bid_amount_chf':1}):
+            with self.assertRaises(ValueError):core.confirm_offer_submission(self.folder,dict(payload,offer_id=offer['id']))
+        snap=core.confirm_offer_submission(self.folder,{'offer_id':offer['id'],'submitted_at':'2024-01-02T00:00:00Z'})
+        self.assertEqual(snap['cost_baseline_chf'],100000)
+        self.assertEqual(snap['captured_at'],offer['captured_at'])
+        self.assertTrue(snap['training_eligible'])
+        self.outcome()
+        self.assertEqual(core.export_feedback(self.folder,self.uploads)['status'],'exported')
+
+    def test_download_after_completion_cannot_become_training_evidence(self):
+        with patch.object(core,'_now',return_value='2024-01-01T00:00:00Z'):
+            offer=core.capture_offer(self.folder,self.calc,self.params,{'margin':5}, {},completed=True)
+        snap=core.confirm_offer_submission(self.folder,{'offer_id':offer['id'],'submitted_at':'2024-01-02T00:00:00Z'})
+        self.assertFalse(snap['training_eligible'])
+        self.outcome()
+        self.assertEqual(core.export_feedback(self.folder,self.uploads)['status'],'withheld')
+        path=self.folder/'feedback/offers'/f"{offer['id']}.json"
+        offer['bid_amount_chf']=1;path.write_text(json.dumps(offer))
+        with self.assertRaisesRegex(ValueError,'integrity'):core.read_offer(self.folder,offer['id'])
+
     def test_chronology_and_verified_evidence(self):
         snap = self.capture()
         for payload in [{'observed_at':snap['submitted_at']}, {'evidence_reference':''}, {'observed_at':'2026-10-10T12:00:00'}, {'verified':'true'}]:

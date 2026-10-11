@@ -18,6 +18,18 @@ def bid(project='p1', outcome='won'):
             'target':{'outcome':outcome}}
 
 class DatasetTests(unittest.TestCase):
+    def test_feedback_lineage_is_preserved_outside_model_inputs(self):
+        record=bid()
+        record.update(submission_hash='snapshot-hash',outcome_revision=3,evidence_reference='Confirmed award')
+        with tempfile.TemporaryDirectory() as temp:
+            prepare_dataset([record],'win_ratio',Path(temp),'base')
+            example=json.loads((Path(temp)/'examples.json').read_text())[0]
+            self.assertEqual(example['evidence']['outcome_revision'],3)
+            self.assertEqual(example['evidence']['submission_hash'],'snapshot-hash')
+            prompts=''.join((Path(temp)/f'{split}.jsonl').read_text() for split in ('train','validation','test'))
+            self.assertNotIn('snapshot-hash',prompts)
+            self.assertNotIn('Confirmed award',prompts)
+
     def test_rejects_public_awards_and_post_outcome_inputs(self):
         r = bid(); r['source_kind'] = 'public_award'
         with self.assertRaisesRegex(ValueError,'own_bid'): validate_record(r,'win_ratio')

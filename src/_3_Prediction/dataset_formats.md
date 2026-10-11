@@ -29,3 +29,7 @@ Preparation writes `train.jsonl`, `validation.jsonl`, `test.jsonl`, `manifest.js
 `market_extraction` is a separate UI task. Preparation uses archived API records
 with verified raw snapshot hashes, plus any provided simap sources. Sponsor CSV
 matching examples are included only in `input_processing`, with one project ID.
+
+New preparation bundles also include `examples.json` (split/line/project and source
+evidence mapping) and `dataset_bundle.zip`. Provenance stays outside model inputs.
+Cloud training must keep `test.jsonl` held out, as declared in the request.

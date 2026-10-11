@@ -1,7 +1,15 @@
-tender didn't pass -> attempt of determining why (UI - folder with all internal data for the tender + link to the tender information with competition applications)
--> success of information gathering -> update estimation of success model (allow fallback/switch)
--> fail of information gathering -> generate report
+Implemented locally:
+- Preserve downloaded offers; confirm the submitted snapshot after tender finalisation.
+- Verified, revisioned outcomes, documents, public evidence, readable reports.
+- Correctable/revocable productivity evidence and own-bid exports to _3.
+- Forecast monitoring, persistent candidate handoffs, bound result import and history.
+- Matching compact UI, APIs, CLI, regression/browser checks and unified context.
 
----
+Awaiting cloud service:
+- Authenticated training/evaluation job transport, polling and artifact/adapter identities.
+- Real GLM-5.3-Flash LoRA compatibility and training validation.
+- Chronological, independent evaluation and calibration on real own-bid evidence.
+- Approved adapter activation and rollback; heuristic stays active until then.
 
-productivity factors for tasks (for the example are static, for production: Set in UI or use AI + lora) [and maybe + set additional constants manually like travel, survey etc.]
+The endpoint contract, rather than an assumed OpenAI chat-compatible URL, must define
+training and evaluation operations. See readme.md and ../../PROJECT_CONTEXT.md.

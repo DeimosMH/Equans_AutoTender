@@ -34,10 +34,10 @@ class MonitoringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             for number,outcome in enumerate(('lost','won')):
                 folder=Path(temp)/('t'+str(number))/'feedback'; folder.mkdir(parents=True)
-                submission={'captured_at':'2024-01-01','training_eligible':True,'submitted_at':'2024-01-01','bid_amount_chf':120,'margin_pct':5,
+                submission={'captured_at':'2024-01-01T00:00:00Z','training_eligible':True,'submitted_at':'2024-01-01T00:00:00Z','bid_amount_chf':120,'margin_pct':5,
                     'prediction':{'model':{'kind':'heuristic'},'curve':[
                         {'margin_pct':0,'p_win':{'mid':.8}},{'margin_pct':10,'p_win':{'mid':.4}}]}}
-                record={'observed_at':'2024-02-0'+str(2-number),'outcome':outcome,
+                record={'observed_at':'2024-02-0'+str(2-number)+'T00:00:00Z','outcome':outcome,
                     'verified':True,'evidence_reference':'award','competitors':[
                         {'name':'Example AG','price_chf':100,'currency':'CHF','comparable':True}]}
                 submission['hash']=hashlib.sha256(json.dumps(submission,sort_keys=True,ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode()).hexdigest()
@@ -57,10 +57,10 @@ class MonitoringTests(unittest.TestCase):
     def test_monitor_rejects_mutated_or_unverified_snapshots(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)/'t1'/'feedback';folder.mkdir(parents=True)
-            submission={'captured_at':'2024-01-01','submitted_at':'2024-01-01','training_eligible':True,
+            submission={'captured_at':'2024-01-01T00:00:00Z','submitted_at':'2024-01-01T00:00:00Z','training_eligible':True,
                         'predicted_win_probability':.7}
             submission['hash']=hashlib.sha256(json.dumps(submission,sort_keys=True,ensure_ascii=False,separators=(',', ':'),allow_nan=False).encode()).hexdigest()
-            outcome={'observed_at':'2024-02-01','outcome':'lost','verified':True,
+            outcome={'observed_at':'2024-02-01T00:00:00Z','outcome':'lost','verified':True,
                      'evidence_reference':'award','submission_hash':submission['hash']}
             (folder/'outcome.json').write_text(json.dumps(outcome))
             submission['predicted_win_probability']=.4
@@ -79,21 +79,21 @@ class MonitoringTests(unittest.TestCase):
         self.assertFalse(failed['noninferior']); self.assertAlmostEqual(failed['brier_difference'],.75)
 
     def test_candidate_rejects_leakage_metadata_and_invalid_probability(self):
-        for field,value in [('candidate_probability',float('nan')),('prediction_provenance',{}),('trained_project_ids',['t0'])]:
+        for field,value in [('candidate_probability',float('nan')),('prediction_provenance',{}),('trained_project_ids',['t0']),('trained_project_ids',['t9']),('submitted_at','2024-01-01T12:00:00')]:
             records=[candidate(i) for i in range(10)]; records[0][field]=value
             result=evaluate_candidate(records)
             self.assertEqual(result['status'],'blocked'); self.assertEqual(len(result['rejected']),1)
         records=[candidate(i) for i in range(10)]
-        records[0]['prediction_provenance']['generated_at']='2024-02-02'
+        records[0]['prediction_provenance']['generated_at']='2024-02-02T00:00:00Z'
         self.assertEqual(evaluate_candidate(records)['status'],'blocked')
 
     def test_historical_backtest_requires_cutoff_and_heldout_ids(self):
         records=[candidate(i) for i in range(10)]
         for row in records:
-            row['prediction_provenance'].update(evaluation_mode='historical_backtest',generated_at='2025-01-01',
-                training_cutoff='2023-12-01',trained_project_ids=[])
+            row['prediction_provenance'].update(evaluation_mode='historical_backtest',generated_at='2025-01-01T00:00:00Z',
+                training_cutoff='2023-12-01T00:00:00Z',trained_project_ids=[])
         self.assertEqual(evaluate_candidate(records)['status'],'evaluated')
-        records[0]['prediction_provenance']['training_cutoff']='2024-02-01'
+        records[0]['prediction_provenance']['training_cutoff']='2024-02-01T00:00:00Z'
         self.assertEqual(evaluate_candidate(records)['status'],'blocked')
 
 if __name__=='__main__': unittest.main()

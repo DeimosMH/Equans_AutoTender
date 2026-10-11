@@ -21,7 +21,7 @@ class FeedbackAPITests(unittest.TestCase):
             root=Path(temp)
             app.TENDERS=root/'tenders'; app.UPLOADS=root/'uploads'; app.UI_SETTINGS=root/'settings.json'
             app.PREPARATION_JOBS=app.JobStore(root/'jobs')
-            app.FEEDBACK_DIR=root/'module4'
+            app.FEEDBACK_REVIEWS=app.ReviewStore(root/'reviews')
             http=ThreadingHTTPServer(('127.0.0.1',0),app.Handler)
             threading.Thread(target=http.serve_forever,daemon=True).start()
             base=f'http://127.0.0.1:{http.server_port}'
@@ -67,7 +67,7 @@ class FeedbackAPITests(unittest.TestCase):
                 self.assertEqual(status,200)
                 self.assertEqual(review['status'],'blocked')
                 self.assertFalse(review['promotion_performed'])
-                self.assertTrue((app.FEEDBACK_DIR/'output/evaluations'/(review['review_id']+'.json')).exists())
+                self.assertTrue((app.FEEDBACK_REVIEWS.root/review['review_id']/'result.json').exists())
                 # Revoking verification removes prior training supervision immediately.
                 self.assertEqual(request(f'/api/tenders/{tid}/outcome',{
                     'outcome':'lost','verified':False,'observed_at':datetime.now(timezone.utc).isoformat()})[0],200)

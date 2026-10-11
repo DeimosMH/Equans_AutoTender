@@ -8,4 +8,5 @@ src/_3_Prediction/data/*manifest*.json
 src/_3_Prediction/models/
 src/_3_Prediction/output/
 src/web_ui/training_jobs/
+src/web_ui/feedback_reviews/
 src/_4_RecursiveImprovement/output/

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Equans AutoTender</title>
+<title>Tendif</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128194;</text></svg>">
 <style>
   :root { --accent:#d9480f; --line:#e2e5ea; --muted:#6b7280; --bg:#f4f5f7;
@@ -94,8 +94,6 @@
            display:flex; flex-direction:column; }
   .topbar h1 { font-size:16px; margin:0; }
   .sub { color:var(--muted); font-size:12px; }
-  .pathtoggle { cursor:pointer; border-bottom:1px dashed var(--muted); }
-  .pathtoggle:hover { color:var(--ink); }
   .dl { color:var(--accent); text-decoration:none; font-weight:600; }
   .dl:hover { text-decoration:underline; }
   .dlwrap { position:relative; }
@@ -144,7 +142,7 @@
   .sc-win { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .sc-divider { width:1px; align-self:stretch; background:var(--line); }
   .sc-inputs { display:flex; gap:16px; flex-wrap:wrap; }
-  .sc-inputs > label > span { display:block; font-size:12px; color:var(--muted);
+  .sc-inputs > * > span { display:block; font-size:12px; color:var(--muted);
                               margin-bottom:6px; }
   .sc-field { display:flex; align-items:center; border:1px solid var(--line);
               border-radius:8px; background:var(--input-bg); }
@@ -155,6 +153,10 @@
   .sc-field input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
   .sc-field input:focus { outline:none; }
   .sc-field i { font-style:normal; color:var(--muted); padding-right:10px; }
+  a.sc-mode, a.sc-mode:visited { color:var(--ink); text-decoration:none; padding:7px 10px;
+                                justify-content:space-between; gap:24px; min-width:128px; }
+  a.sc-mode:hover { border-color:var(--accent); background:var(--hover); }
+  .sc-mode > span[aria-hidden] { color:var(--muted); font-size:18px; line-height:1; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:12px; }
   .stat { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; }
   .stat .k { font-size:12px; color:var(--muted); }
@@ -178,23 +180,10 @@
   .pf-field input { width:82px; padding:6px 8px; border:1px solid var(--line);
                     border-radius:8px; background:var(--input-bg); color:var(--ink); }
   .pf-eff { font-size:12px; color:var(--muted); min-width:96px; }
-  .updrow { display:grid; grid-template-columns:200px auto 1fr auto minmax(100px, auto);
-            gap:10px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
-  .updrow:last-child { border-bottom:0; }
-  .updrow input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line);
-                             border-radius:8px; font:inherit; background:var(--input-bg);
-                             color:var(--ink); }
-  .rowmsg { font-size:12px; color:var(--muted); }
   details.adv { border:1px solid var(--line); border-radius:10px; padding:10px 16px;
                 background:var(--panel); }
   details.adv summary { cursor:pointer; font-weight:600; color:var(--muted);
                         font-size:13px; }
-  .advgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr));
-             gap:12px; margin-top:12px; }
-  .advgrid label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-  .advgrid input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line);
-                              border-radius:8px; font:inherit; background:var(--input-bg);
-                              color:var(--ink); }
 
   /* ---------- big empty-state upload zone ---------- */
   .emptywrap { display:flex; align-items:center; justify-content:center;
@@ -237,11 +226,13 @@
              padding:80px 20px; }
   .welcome b { color:var(--ink); }
 </style>
+<link rel="stylesheet" href="/static/training.css">
+<link rel="stylesheet" href="/static/workspace.css">
 </head>
 <body>
 <nav>
   <div class="nav-inner">
-  <div class="brand">Equans AutoTender</div>
+  <div class="brand">Tendif</div>
   <div class="navlabel">TENDERS</div>
   <ul id="tenderList"></ul>
   <div class="addbox">
@@ -250,7 +241,10 @@
       <button id="createBtn" class="primary">Create</button>
     </div>
     <button id="addBtn" style="width:100%">+ Add tender</button>
-    <button id="settingsBtn" class="navlink">&#9881; Settings</button>
+    <div class="nav-actions">
+      <button id="trainingBtn" class="navlink">LoRA training</button>
+      <button id="settingsBtn" class="navlink" aria-label="Settings" title="Settings"><span aria-hidden="true">&#9881;</span></button>
+    </div>
   </div>
   </div>
 </nav>
@@ -264,7 +258,7 @@
     <div>
       <div style="display:flex; align-items:center; gap:8px">
         <h1 id="tenderTitle">No tender selected</h1>
-        <input id="renameInput" class="hidden" maxlength="60" title="Enter to save, Esc to cancel">
+        <input id="renameInput" class="hidden" maxlength="60" aria-label="Tender name" title="Enter to save, Esc to cancel">
         <button id="renameBtn" class="navlink hidden" title="rename tender"
                 style="margin-top:0; padding:4px 8px; font-size:15px">&#9998;</button>
       </div>
@@ -273,6 +267,9 @@
     <div class="spacer"></div>
     <span class="badge warn hidden" id="reviewBadge"></span>
     <span class="badge hidden" id="dirtyBadge">unsaved edits</span>
+    <span id="lifecycleBadge" class="badge hidden">Finalised</span>
+    <button id="finaliseBtn" class="hidden">Tender finalised</button>
+    <span id="tenderActionMsg" role="status" class="hint hidden"></span>
     <button id="saveBtn" class="hidden" disabled>Save changes</button>
     <div class="dlwrap hidden" id="dlwrap">
       <button id="pdfBtn" class="primary">Download &#9662;</button>
@@ -284,9 +281,9 @@
           <input type="checkbox" id="hideNotes"> hide supplier-quote note
         </label>
         <div class="dl-sep"></div>
-        <a data-fmt="pdf" title="portable document">PDF</a>
-        <a data-fmt="html" title="standalone web page">HTML</a>
-        <a data-fmt="docx" title="editable Word document">DOCX</a>
+        <a href="#" data-fmt="pdf" title="portable document">PDF</a>
+        <a href="#" data-fmt="html" title="standalone web page">HTML</a>
+        <a href="#" data-fmt="docx" title="editable Word document">DOCX</a>
       </div>
     </div>
   </div>
@@ -298,9 +295,7 @@
     <div class="uploadzone" id="zone">
       <div class="big">&#128194;</div>
       <h2>Upload tender</h2>
-      <p>positions <b>.csv</b> is calculated immediately &middot;
-         tender <b>.pdf</b> is stored until _1_AI_InputProcessing exists<br>
-         you can also drag &amp; drop the file here</p>
+      <p>Drop a positions CSV to calculate costs, or attach a tender PDF.</p>
       <label class="bigbtn">Upload tender
         <input type="file" id="bigFile" accept=".csv,.pdf" hidden>
       </label>
@@ -314,6 +309,8 @@
   </div>
 </main>
 
+<script src="/static/training.js"></script>
+<script src="/static/learning.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 
@@ -323,11 +320,12 @@ function setDarkMode(on) {
 }
 if (localStorage.getItem("autotender_dark") === "1") document.body.classList.add("dark");
 if (localStorage.getItem("autotender_nav") === "1") document.body.classList.add("navoff");
-let tenders = [], current = null;      // current = tender id or null
+let tenders = [], current = localStorage.getItem("autotender_current");
 let meta = null, calc = null, params = null;
 let dirtyFields = new Map();           // lv_id -> Set of edited field names
+const tenderDrafts = new Map();        // Preserve in-session edits when visiting training/settings.
 let sortState = { key: null, dir: 1 }; // column key + 1 asc / -1 desc
-let view = "tender";                   // "tender" | "settings"
+let view = "tender";                   // "tender" | "settings" | "training"
 let pfMode = "manual";                // productivity factors mode
 let pfProd = null;                    // productivity settings being edited
 
@@ -340,7 +338,6 @@ function collectPf() {
   });
   pfProd[pfMode] = out;
 }
-let pathExpanded = false;              // source-path disclosure in the topbar
 let SCENARIOS = [];
 let winAnchors = [];
 let predictionTimer = null, predictionRequest = 0, predictionKey = null;
@@ -356,12 +353,14 @@ function winChance(margin) {
   }
   return "unavailable";
 }
+function winLabel(margin) {
+  const chance = winChance(margin);
+  return typeof chance === "number" ? `≈ ${chance}% win chance` : "Win estimate unavailable";
+}
 function usePrediction(data) {
   winAnchors = (data?.curve || []).map(p => [p.margin_pct, p.p_win.mid * 100]);
-  if ($("winOut")) $("winOut").textContent = winChance(parseFloat($("margin").value));
-  if ($("predictionNote")) $("predictionNote").textContent = data?.model?.warning || "Prediction unavailable";
-  if ($("scenarioResults")) $("scenarioResults").innerHTML = (data?.scenarios || []).map(p =>
-    `<div><b>${esc(p.scenario)}</b>: CHF ${chf(p.bid_price_chf)} · ${p.margin_pct}% margin · ~${Math.round(p.p_win.mid * 100)}% estimate (${Math.round(p.p_win.min * 100)}–${Math.round(p.p_win.max * 100)}% sensitivity) · expected contribution CHF ${chf(p.expected_contribution_chf)}</div>`).join("");
+  if ($("winOut")) $("winOut").textContent = winLabel(parseFloat($("margin").value));
+
 }
 function refreshPrediction(baseline) {
   const key = `${current}:${baseline}`;
@@ -370,8 +369,7 @@ function refreshPrediction(baseline) {
   clearTimeout(predictionTimer);
   const request = ++predictionRequest, tender = current;
   winAnchors = [];
-  if ($("winOut")) $("winOut").textContent = "pending";
-  if ($("scenarioResults")) $("scenarioResults").textContent = "Updating bid scenarios…";
+  if ($("winOut")) $("winOut").textContent = "Updating win estimate…";
   predictionTimer = setTimeout(async () => {
     try {
       const res = await fetch(`/api/tenders/${tender}/wincurve?baseline=${encodeURIComponent(baseline)}`);
@@ -432,8 +430,8 @@ async function refreshTenders(selectId) {
 function renderSidebar() {
   $("tenderList").innerHTML = tenders.map(t =>
     `<li data-id="${t.id}" class="${t.id === current ? "active" : ""}" title="${esc(t.name)}">
-       <span class="dot ${t.status}"></span>
-       <span class="tname">${esc(t.name)}</span>
+       <span class="dot ${t.status}" aria-hidden="true"></span>
+       <span class="tname">${esc(t.name)}</span>${t.lifecycle === "finalised" ? `<span class="tstate">${({won:"Won",lost:"Lost",withdrawn:"Withdrawn"})[t.status] || "Finalised"}</span>` : ""}
        <button class="del" data-del="${t.id}" title="delete tender">&#10005;</button>
      </li>`).join("");
 }
@@ -441,9 +439,12 @@ function renderSidebar() {
 async function loadTender() {
   meta = calc = null;
   view = "tender";   // selecting/refreshing tenders always returns to that view
-  if (!current) { renderMain(); return; }
-  const res = await fetch(`/api/tenders/${current}`);
+  if (!current) { localStorage.removeItem("autotender_current"); renderMain(); return; }
+  const tender = current;
+  localStorage.setItem("autotender_current", tender);
+  const res = await fetch(`/api/tenders/${tender}`);
   const j = await res.json();
+  if (current !== tender || view !== "tender") return;
   if (!res.ok) { current = null; renderSidebar(); renderMain(); return; }
   meta = j.meta; calc = j.calc; params = j.params;
   dirtyFields = new Map();
@@ -452,13 +453,49 @@ async function loadTender() {
 
 /* ------------------------------------------------ main area rendering */
 
+function stashTenderDraft() {
+  if (view !== "tender" || !current || !$("posTable")) return;
+  tenderDrafts.set(current, {
+    fields: new Map([...dirtyFields].map(([lv, fields]) => [lv, new Set(fields)])),
+    values: [...document.querySelectorAll("#posTable tbody tr")].map(row => [row.dataset.lv,
+      [...row.querySelectorAll("input[data-f]")].map(input => [input.dataset.f, input.value])]),
+    scenario: Object.fromEntries(["margin", "overhead", "waste"].map(id => [id, $(id).value])),
+  });
+}
+
+function openSettings() {
+  stashTenderDraft();
+  view = "settings"; location.hash = "settings"; renderMain();
+}
+
+function openTraining() {
+  stashTenderDraft();
+  view = "training";
+  location.hash = "training";
+  renderMain();
+}
+
+function renderTraining() {
+  ["emptywrap", "welcome", "saveBtn", "dlwrap", "dlMenu", "renameBtn", "dirtyBadge", "reviewBadge", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
+  $("content").classList.remove("hidden");
+  $("tenderTitle").textContent = "LoRA training";
+  $("sub").textContent = "Collect sources, prepare datasets and review training evidence";
+  $("content").innerHTML = '<div id="trainingWorkspace"></div>';
+  AutoTenderTraining.mount($("trainingWorkspace"));
+}
+
 function renderMain() {
+  AutoTenderTraining.dispose();
+  $("trainingBtn").classList.toggle("active", view === "training");
+  $("settingsBtn").classList.toggle("active", view === "settings");
+  document.querySelectorAll("#tenderList li").forEach(li => li.classList.toggle("active", view === "tender" && li.dataset.id === current));
+  if (view === "training") { renderTraining(); return; }
   if (view === "settings") { renderSettings(); return; }
   const hasCalc = !!(calc && calc.position_results);
   $("emptywrap").classList.add("hidden");
   $("welcome").classList.add("hidden");
   $("content").classList.add("hidden");
-  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.add("hidden"));
+  ["saveBtn", "dlwrap", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
   $("dlMenu").classList.add("hidden");
   $("renameBtn").classList.add("hidden");
   $("dirtyBadge").classList.add("hidden");
@@ -472,7 +509,7 @@ function renderMain() {
   if (!hasCalc) {
     $("sub").innerHTML = meta.status === "pdf_stored"
       ? `<a class="dl" href="/api/tenders/${current}/download?file=tender" download>${esc(meta.uploaded_file || "tender.pdf")}</a>` +
-        ` stored - waiting for _1_AI_InputProcessing, or upload a positions csv`
+        ` stored · upload a positions CSV to calculate costs`
       : "new tender - no calculation yet";
     $("emptywrap").classList.remove("hidden");
     return;
@@ -480,42 +517,37 @@ function renderMain() {
 
   const srcPath = calc.input?.positions_file ?? "";
   const srcName = srcPath.split("/").pop() || srcPath || "?";
-  $("sub").innerHTML =
-    `${calc.position_results.length} positions · ` +
-    `<span id="pathToggle" class="pathtoggle" title="show full path">` +
-    `${pathExpanded ? "&#9662;" : "&#9656;"} ${esc(pathExpanded ? srcPath : srcName)}</span>` +
-    ` <a class="dl" href="/api/tenders/${current}/download?file=positions" download
-        title="download ${esc(srcName)}">&#8681;</a>`;
-  $("pathToggle").addEventListener("click", () => {
-    pathExpanded = !pathExpanded;
-    $("pathToggle").innerHTML =
-      `${pathExpanded ? "&#9662;" : "&#9656;"} ` +
-      esc(pathExpanded ? srcPath : srcName);
-    $("pathToggle").title = pathExpanded ? "hide full path" : "show full path";
-  });
+  $("sub").innerHTML = `${calc.position_results.length} positions · <a class="dl" href="/api/tenders/${current}/download?file=positions" download>${esc(srcName)}</a>`;
   const review = calc.position_results.filter(p => p.review_required).length;
   $("reviewBadge").classList.toggle("hidden", review === 0);
   $("reviewBadge").textContent = `${review} need review`;
   $("content").classList.remove("hidden");
-  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.remove("hidden"));
+  $("dlwrap").classList.remove("hidden");
+  $("saveBtn").classList.toggle("hidden", tenderFinished());
+  $("finaliseBtn").classList.toggle("hidden", tenderFinished());
+  $("lifecycleBadge").classList.toggle("hidden", !tenderFinished());
 
-  const p = params;
+  const p = structuredClone(params);
+  if (meta.final_commercial) {
+    p.commercial.target_margin_pct = meta.final_commercial.margin;
+    p.commercial.overhead_pct = meta.final_commercial.overhead;
+    p.allowances.material_waste_pct = meta.final_commercial.waste;
+  }
   const so = (p.stretch_bid_optimization || {}).scenario_margins_pct || {};
   SCENARIOS = Object.entries(so).map(([name, m], i) => [name, m, null, ["mk-agg", "mk-tgt", "mk-con"][i] || "mk-tgt"]);
   winAnchors = [];
   predictionKey = null;
   const maxMargin = 15;
   $("content").innerHTML = `
+    ${tenderFinished() ? completionMarkup() : ""}
     <section class="card">
-      <h2>Scenario</h2>
-      <div class="hint" id="predictionNote">Illustrative heuristic; no trained model.</div>
-      <div class="hint" id="scenarioResults"></div>
+      <h2>Pricing</h2>
       <div class="scenario">
         <div class="sc-margin">
           <div class="sc-head">
-            <span class="sc-label">Target margin</span>
+            <label for="margin" class="sc-label">Target margin</label>
             <span class="sc-right">
-              <span class="sc-win" title="Parameter-based heuristic estimate; not calibrated">&#8776; <output id="winOut">-</output>% win chance</span>
+              <span class="sc-win" title="Estimated win chance"><output id="winOut">Updating win estimate…</output></span>
               <span class="sc-value"><output id="marginOut">${p.commercial.target_margin_pct}</output><small>%</small></span>
             </span>
           </div>
@@ -539,11 +571,10 @@ function renderMain() {
             <div class="sc-field"><input type="number" id="overhead" step="0.5" min="0" max="30" value="${p.commercial.overhead_pct}"><i>%</i></div></label>
           <label><span>Material waste</span>
             <div class="sc-field"><input type="number" id="waste" step="0.5" min="0" max="20" value="${p.allowances.material_waste_pct}"><i>%</i></div></label>
-        </div>
-        <div class="hint" style="flex-basis:100%">
-          productivity factors:
-          <a id="pfModeLink" style="color:var(--accent);cursor:pointer"
-             title="change in settings">${esc(localStorage.getItem("autotender_pf_mode") || "manual")}</a>
+          <div class="sc-productivity"><span id="pfModeLabel">Productivity factors</span>
+            <a id="pfModeLink" class="sc-field sc-mode" href="#settings" aria-labelledby="pfModeLabel pfModeValue"
+               title="Edit productivity factors in Settings"><span id="pfModeValue">${localStorage.getItem("autotender_pf_mode") === "ai" ? "AI" : "Manual"}</span><span aria-hidden="true">›</span></a>
+          </div>
         </div>
       </div>
     </section>
@@ -554,8 +585,8 @@ function renderMain() {
       <div class="stat"><div class="k">Cost baseline</div><div class="v" id="cBase">-</div></div>
       <div class="stat hl"><div class="k">Indicative selling price</div><div class="v" id="cPrice">-</div></div>
     </section>
-    <section class="card">
-      <h2>Positions - click a column header to sort, white cells are editable</h2>
+    <section class="card" tabindex="0" aria-labelledby="positionsTitle">
+      <h2 id="positionsTitle">Positions</h2>
       <table id="posTable">
         <thead><tr>
           <th data-key="lv">LV<span class="arrow"></span></th>
@@ -574,50 +605,7 @@ function renderMain() {
       </table>
       <p id="tableMsg" style="color:var(--muted);font-size:12px;margin-bottom:0"></p>
     </section>
-    <section class="card" id="feedbackPanel">
-      <h2>Bid outcome and learning</h2>
-      <p class="hint">Record a submission before its outcome to preserve the bid, saved calculation and prediction. Public notices provide evidence; they cannot confirm whether we participated.</p>
-      <div id="feedbackState" class="hint">Loading feedback…</div>
-      <div class="upload-row">
-        <label>Submitted bid CHF <input id="feedbackBid" type="number" min="0" step="0.01" placeholder="From saved baseline and selected margin"></label>
-        <button id="recordSubmission">Record submission</button>
-      </div>
-      <div class="upload-row">
-        <label>Outcome <select id="feedbackOutcome"><option value="lost">Lost</option><option value="won">Won</option><option value="withdrawn">Withdrawn</option></select></label>
-        <label>Observed at <input id="feedbackObserved" type="datetime-local"></label>
-        <label><input id="feedbackVerified" type="checkbox"> Confirmed own bid outcome</label>
-      </div>
-      <div class="upload-row">
-        <label>Evidence reference <input id="feedbackEvidence" type="text" placeholder="Debrief, award letter or internal reference"></label>
-        <label>Comparable award CHF <input id="feedbackAward" type="number" min="0" step="0.01"></label>
-        <label><input id="feedbackComparable" type="checkbox"> Same scope, currency and VAT basis</label>
-      </div>
-      <details><summary>Verified competitor evidence</summary>
-        <label>Winner <input id="feedbackWinner" type="text"></label>
-        <label>Competitors JSON <textarea id="feedbackCompetitors" placeholder='[{"name":"Company","price_chf":100000,"currency":"CHF","comparable":true}]'></textarea></label>
-        <p class="hint">Only comparable CHF prices enter descriptive competitor summaries.</p>
-      </details>
-      <div class="upload-row">
-        <label>Reason codes <input id="feedbackReasons" type="text" placeholder="price, technical_score, references, capacity, other"></label>
-        <label><input id="feedbackReasonsConfirmed" type="checkbox"> Reasons confirmed by evidence</label>
-        <label>Debrief notes <textarea id="feedbackNarrative" maxlength="10000"></textarea></label>
-        <button id="recordOutcome">Save outcome and prepare feedback</button>
-      </div>
-      <div class="upload-row">
-        <input id="feedbackLinks" type="text" placeholder="HTTPS simap project URL">
-        <button id="gatherOutcomeEvidence">Gather public evidence</button>
-        <button id="refreshFeedback">Refresh analysis</button>
-      </div>
-      <div id="feedbackActions"></div><pre id="feedbackAnalysis" style="white-space:pre-wrap"></pre>
-      <details><summary>Record measured productivity</summary>
-        <p class="hint">Use verified measurements. Recording them prepares training data; it does not replace active calculation factors.</p>
-        <label>Factors JSON <textarea id="measuredFactors" placeholder='{"site_efficiency":0.9}'></textarea></label>
-        <label>Measurement reference <input id="measurementReference" placeholder="Approved timesheet or measurement record"></label>
-        <label><input id="measurementVerified" type="checkbox"> Verified measurement</label>
-        <button id="recordMeasurement">Save measurement</button>
-      </details>
-      <span id="feedbackMessage" class="hint"></span>
-    </section>`;
+`;
 
   const tb = $("posTable").querySelector("tbody");
   calc.position_results.forEach((pos, i) => {
@@ -625,15 +613,15 @@ function renderMain() {
     tr.dataset.lv = pos.lv_id;
     const status = pos.review_required ? "quote required" : pos.status;
     tr.innerHTML =
-      `<td>${pos.lv_id}</td><td>${pos.matched_product_id}</td><td>${pos.install_code}</td>` +
-      `<td class="num"><input type="number" min="0" step="any" data-f="quantity" value="${pos.quantity}"></td>` +
-      `<td>${pos.unit}</td>` +
-      `<td class="num"><input type="number" min="0" step="0.01" data-f="net_unit_cost_chf" value="${pos.net_unit_cost_chf}"></td>` +
+      `<td>${esc(pos.lv_id)}</td><td>${esc(pos.matched_product_id)}</td><td>${esc(pos.install_code)}</td>` +
+      `<td class="num"><input aria-label="Quantity for ${esc(pos.lv_id)}" type="number" min="0" step="any" data-f="quantity" value="${pos.quantity}"></td>` +
+      `<td>${esc(pos.unit)}</td>` +
+      `<td class="num"><input aria-label="Net unit cost for ${esc(pos.lv_id)}" type="number" min="0" step="0.01" data-f="net_unit_cost_chf" value="${pos.net_unit_cost_chf}"></td>` +
       `<td class="num c-mat"></td>` +
       `<td class="num">${pos.adjusted_install_hours}</td>` +
-      `<td class="num"><input type="number" min="0" step="0.01" data-f="labour_cost_chf" value="${pos.labour_cost_chf}"></td>` +
+      `<td class="num"><input aria-label="Labour cost for ${esc(pos.lv_id)}" type="number" min="0" step="0.01" data-f="labour_cost_chf" value="${pos.labour_cost_chf}"></td>` +
       `<td class="num c-dir"></td>` +
-      `<td><span class="st ${pos.review_required ? "warn" : ""}">${status}</span></td>`;
+      `<td><span class="st ${pos.review_required ? "warn" : ""}">${esc(status)}</span></td>`;
     tb.appendChild(tr);
     tr.querySelectorAll("input[data-f]").forEach(inp => {
       inp.addEventListener("input", () => {
@@ -656,17 +644,31 @@ function renderMain() {
       s.dispatchEvent(new Event("input"));
     }));
   const pfLink = $("pfModeLink");
-  if (pfLink) pfLink.addEventListener("click", () => { view = "settings"; renderMain(); });
+  if (pfLink) pfLink.addEventListener("click", openSettings);
   $("posTable").querySelectorAll("th[data-key]").forEach(th =>
     th.addEventListener("click", () => {
       if (sortState.key === th.dataset.key) sortState.dir *= -1;
       else { sortState.key = th.dataset.key; sortState.dir = 1; }
       applySort();
     }));
+  const draft = tenderDrafts.get(current);
+  if (draft) {
+    dirtyFields = new Map([...draft.fields].map(([lv, fields]) => [lv, new Set(fields)]));
+    for (const [lv, values] of draft.values) {
+      const row = [...tb.rows].find(row => row.dataset.lv === lv);
+      if (!row) continue;
+      for (const [field, value] of values) row.querySelector(`[data-f="${field}"]`).value = value;
+      row.classList.toggle("dirty", dirtyFields.has(lv));
+    }
+    for (const [id, value] of Object.entries(draft.scenario)) $(id).value = value;
+  }
   applySort();   // keep the chosen ordering after save/reload
   updateSaveState();
   recompute();
-  setupFeedback();
+  if (tenderFinished()) {
+    document.querySelectorAll('#posTable input, #margin, #overhead, #waste, .sc-chip').forEach(el => el.disabled = true);
+    setupFeedback();
+  }
 }
 
 /* live recompute - mirrors step4_project.py and the PDF report; labour comes
@@ -677,7 +679,7 @@ function recompute() {
   const overhead = parseFloat($("overhead").value) || 0;
   const margin = parseFloat($("margin").value) || 0;
   $("marginOut").value = margin;
-  if ($("winOut")) $("winOut").textContent = winChance(margin);
+  if ($("winOut")) $("winOut").textContent = winLabel(margin);
   document.querySelectorAll(".sc-chip").forEach(chip =>
     chip.classList.toggle("on", Math.abs(parseFloat(chip.dataset.margin) - margin) < 0.26));
 
@@ -717,80 +719,169 @@ function updateSaveState() {
   $("tableMsg").textContent = hasEdits ? "unsaved manual edits - press Save changes" : "";
 }
 
+function tenderFinished() {
+  return meta?.lifecycle === "finalised" || (!meta?.lifecycle && ["won", "lost", "withdrawn"].includes(meta?.status));
+}
+
+function completionMarkup() {
+  return `<section class="card completion-card" id="feedbackPanel">
+    <div class="completion-head"><div><h2>Tender outcome</h2><p class="hint" id="feedbackState">Add the result and supporting documents.</p></div><button id="reopenBtn">Reopen tender</button></div>
+    <div class="completion-documents"><div><b>Supporting documents</b><span class="hint">Award letter, debrief or updated information</span></div><button id="uploadOutcomeDocuments">Upload documents</button><input type="file" id="outcomeFiles" accept=".pdf,.docx,.txt,.csv,.png,.jpg,.jpeg" multiple hidden></div>
+    <div id="outcomeDocuments" class="document-list"></div>
+    <form id="outcomeForm">
+      <div class="completion-grid"><label>Result<select id="feedbackOutcome" required><option value="">Select result</option><option value="won">Won</option><option value="lost">Lost</option><option value="withdrawn">Withdrawn</option></select></label><label>Result received<input id="feedbackObserved" type="datetime-local" step="1" required></label></div>
+      <label id="submittedOfferField" class="hidden">Submitted offer<select id="submittedOffer"><option value="">Other offer · enter the price below</option></select></label>
+      <div id="submissionFields" class="completion-grid"><label>Our submitted price · CHF<input id="feedbackBid" type="number" min="0.01" step="0.01" required></label><label>Bid submitted on<input id="feedbackSubmitted" type="datetime-local" step="1" required></label></div>
+      <label>Notes<textarea id="feedbackNarrative" rows="2" placeholder="What should we know about this result?" maxlength="10000"></textarea></label>
+      <details class="completion-details"><summary>Decision details</summary><div class="completion-grid"><label>Evidence reference<input id="feedbackEvidence" placeholder="Document, link or internal reference"></label><label>Decision reason<select id="feedbackReason"><option value="">Not specified</option><option value="price">Price</option><option value="technical_score">Technical score</option><option value="references">References</option><option value="capacity">Capacity</option><option value="compliance">Compliance</option><option value="delivery">Delivery</option><option value="quality">Quality</option><option value="relationship">Client relationship</option><option value="withdrawal">Withdrawal</option><option value="other">Other</option></select></label><label>Winning company<input id="feedbackWinner"></label><label>Award price · CHF<input id="feedbackAward" type="number" min="0.01" step="0.01"></label></div><label class="check-label"><input id="feedbackVerified" type="checkbox">Outcome verified against the evidence</label><label class="check-label"><input id="feedbackReasonsConfirmed" type="checkbox">Reason confirmed by the client</label><label class="check-label"><input id="feedbackComparable" type="checkbox">Award price covers the same scope and VAT basis</label></details>
+      <div class="completion-actions"><button id="recordOutcome" class="primary" type="submit">Save outcome</button><span id="feedbackMessage" role="status" class="hint"></span><div id="feedbackActions"></div></div>
+    </form>
+    <details class="completion-details"><summary>Public award notice</summary><div class="completion-inline"><label>simap project URL<input id="feedbackLinks" type="url" placeholder="https://www.simap.ch/…"></label><button id="gatherOutcomeEvidence">Import notice</button></div><div id="publicEvidenceStatus" class="hint" role="status"></div></details>
+    <details class="completion-details"><summary>Actual productivity</summary><form id="measurementForm"><div class="completion-grid">${Object.entries({site_efficiency:"Site efficiency",school_logistics:"School logistics",mounting_height_school:"School mounting height",mounting_height_sports_hall:"Sports hall mounting height",timber_interface:"Timber interface"}).map(([key,label])=>`<label>${label}<input type="number" data-measure="${key}" step="0.001" min="0.001" placeholder="Measured factor"></label>`).join("")}<label>Measurement reference<input id="measurementReference" required placeholder="Timesheet or measurement record"></label></div><label class="check-label"><input id="measurementVerified" type="checkbox" required>Verified measurement</label><button id="recordMeasurement" type="submit">Save measurement</button><button id="revokeMeasurement" type="button" class="hidden">Exclude from learning</button><span id="measurementMessage" class="hint" role="status"></span></form></details>
+  </section>`;
+}
+
 async function setupFeedback() {
-  const tender = current;
-  let expectedRevision = 0, initialized = false;
-  const msg = () => $("feedbackMessage");
-  const localNow = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
-  $("feedbackObserved").value = localNow;
-  async function refresh() {
-    const response = await fetch(`/api/tenders/${tender}/feedback`);
-    const data = await response.json();
-    if (current !== tender || !$("feedbackPanel")) return;
-    if (!response.ok) throw new Error(data.error || "Cannot load feedback");
-    $("feedbackState").textContent = data.submission ? "Submission recorded; its calculation and prediction are preserved." : "Submission has not been recorded.";
-    $("recordSubmission").dataset.frozen = data.submission ? "true" : "false";
-    $("recordSubmission").disabled = !!data.submission;
-    $("recordOutcome").disabled = !data.submission;
-    expectedRevision = data.outcome?.revision || 0;
-    if (!initialized && data.outcome) {
-      const out = data.outcome;
-      $("feedbackOutcome").value = out.outcome;
-      $("feedbackVerified").checked = out.verified;
-      $("feedbackEvidence").value = out.evidence_reference || "";
-      $("feedbackReasons").value = (out.reason_codes || []).join(", ");
-      $("feedbackReasonsConfirmed").checked = out.reasons_confirmed;
-      $("feedbackNarrative").value = out.narrative || "";
-      $("feedbackAward").value = out.award_price_chf || "";
-      $("feedbackComparable").checked = out.award_price_comparable;
-      $("feedbackWinner").value = out.winner || "";
-      $("feedbackCompetitors").value = JSON.stringify(out.competitors || []);
-      const observed = new Date(out.observed_at);
-      $("feedbackObserved").value = new Date(observed.getTime()-observed.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  const tender = current, panel = $("feedbackPanel");
+  panel.querySelectorAll("input, select, textarea, button").forEach(el => el.disabled = true);
+  const active = () => current === tender && panel.isConnected;
+  let data = null, reasonChanged = false;
+  const localDate = value => { const d = new Date(value); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,19); };
+  const showMessage = (text, error=false) => { if (!active()) return; $("feedbackMessage").textContent=text; $("feedbackMessage").classList.toggle("err",error); };
+  async function request(action, body) {
+    const res = await fetch(`/api/tenders/${tender}/${action}`, body === undefined ? {} : {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || "Could not save. Please try again.");
+    return result;
+  }
+  function showDocuments(documents) {
+    if (!active()) return;
+    $("outcomeDocuments").innerHTML=documents.map(d=>`<a href="/api/tenders/${tender}/completion-documents/${d.id}" download>${esc(d.name)} <small>${Math.max(1,Math.round(d.size/1024))} KB ↓</small></a>`).join("");
+  }
+  function showSubmission() {
+    const frozen=!!data.submission;
+    $("submittedOfferField").classList.toggle("hidden",frozen || !data.offers?.length);
+    $("submittedOffer").disabled=frozen;
+    $("feedbackBid").readOnly=!!$("submittedOffer").value;
+    $("submissionFields").classList.toggle("hidden",frozen);
+    ["feedbackBid","feedbackSubmitted"].forEach(id=>{ $(id).required=!frozen; $(id).disabled=frozen; });
+  }
+  try {
+    const [feedback, files] = await Promise.all([request("feedback"),request("completion-documents")]);
+    if(!active()) return;
+    data=feedback; showDocuments(files.documents);
+    $("submittedOffer").innerHTML='<option value="">Other offer · enter the price below</option>'+data.offers.map(o=>`<option value="${esc(o.id)}">${esc(new Date(o.captured_at).toLocaleString())} · CHF ${chf(o.bid_amount_chf)}</option>`).join("");
+    $("submittedOffer").onchange=()=>{
+      const offer=data.offers.find(o=>o.id===$("submittedOffer").value);
+      if(offer)$("feedbackBid").value=offer.bid_amount_chf;
+      $("feedbackSubmitted").min=offer ? localDate(new Date(new Date(offer.captured_at).getTime()+1000)) : "";
+      showSubmission();
+    };
+    showSubmission();
+    showMeasurement();
+    showEvidence();
+    $("feedbackBid").value=meta.final_commercial ? Number($("cPrice").textContent.replaceAll(",","")) : "";
+    $("feedbackObserved").value=localDate(data.outcome?.observed_at || new Date());
+    if(data.outcome) {
+      const out=data.outcome;
+      $("feedbackOutcome").value=out.outcome;
+      $("feedbackNarrative").value=out.narrative||"";
+      $("feedbackEvidence").value=out.evidence_reference||"";
+      $("feedbackVerified").checked=out.verified;
+      $("feedbackReason").value=out.reason_codes?.[0]||"";
+      $("feedbackReasonsConfirmed").checked=out.reasons_confirmed;
+      $("feedbackWinner").value=out.winner||"";
+      $("feedbackAward").value=out.award_price_chf||"";
+      $("feedbackComparable").checked=out.award_price_comparable;
+      $("feedbackState").textContent=`${({won:"Won",lost:"Lost",withdrawn:"Withdrawn"})[out.outcome]} · You can update the result or add documents.`;
+      $("feedbackActions").innerHTML=`<a href="/api/tenders/${tender}/postmortem?format=pdf">Download report ↓</a>`;
     }
-    initialized = true;
-    $("feedbackAnalysis").textContent = data.analysis ? JSON.stringify(data.analysis, null, 2) : "No analysis yet.";
-    $("feedbackActions").innerHTML = data.submission ? ["md","html","pdf"].map(format =>
-      `<a style="margin-right:16px" href="/api/tenders/${tender}/postmortem?format=${format}">Download ${format.toUpperCase()} report</a>`).join("") : "";
+  } catch(error) { showMessage(error.message,true); }
+  if (!active()) return;
+  $("feedbackReason").onchange=()=>{reasonChanged=true;};
+  $("uploadOutcomeDocuments").onclick=()=>$("outcomeFiles").click();
+  $("outcomeFiles").onchange=async event=>{
+    const input=event.target, files=[...input.files];input.disabled=true;
+    try {
+      for(const file of files) {
+        const res=await fetch(`/api/tenders/${tender}/completion-documents?name=${encodeURIComponent(file.name)}`,{method:"POST",body:file});
+        const result=await res.json();if(!res.ok)throw new Error(result.error);
+        showDocuments(result.documents);
+        if(active()&&!$("feedbackEvidence").value)$("feedbackEvidence").value=`Uploaded document: ${result.document.name}`;
+      }
+      showMessage(`${files.length} document${files.length===1?"":"s"} uploaded.`);
+    } catch(error){showMessage(error.message,true);} finally{input.disabled=false;input.value="";}
+  };
+  $("outcomeForm").onsubmit=async event=>{
+    event.preventDefault();const button=$("recordOutcome");button.disabled=true;
+    try {
+      if(!data)throw new Error("Reload the tender to load its outcome history.");
+      const observed=new Date($("feedbackObserved").value).toISOString();
+      const submitted=data.submission?.submitted_at || new Date($("feedbackSubmitted").value).toISOString();
+      if(new Date(observed)<=new Date(submitted))throw new Error("The result must be received after the bid was submitted.");
+      const evidence=$("feedbackEvidence").value;
+      if(($("feedbackVerified").checked||$("feedbackReasonsConfirmed").checked)&&!evidence.trim())throw new Error("Add a supporting document or evidence reference.");
+      const body={expected_revision:data.outcome?.revision||0,outcome:$("feedbackOutcome").value,observed_at:observed,
+        narrative:$("feedbackNarrative").value,verified:$("feedbackVerified").checked,evidence_reference:evidence,
+        reason_codes:reasonChanged ? [$("feedbackReason").value].filter(Boolean) : (data.outcome?.reason_codes||[$("feedbackReason").value].filter(Boolean)),
+        reasons_confirmed:$("feedbackReasonsConfirmed").checked,winner:$("feedbackWinner").value,
+        competitors:data.outcome?.competitors||[],award_price_chf:$("feedbackAward").value ? Number($("feedbackAward").value) : null,
+        award_price_comparable:$("feedbackComparable").checked};
+      if(!data.submission) {
+        const saved=await request("submission",{offer_id:$("submittedOffer").value||undefined,submitted_at:submitted,bid_amount_chf:Number($("feedbackBid").value),retrospective:true});
+        data=saved.feedback;if(active())showSubmission();
+      }
+      const saved=await request("outcome",body);data=saved.feedback;
+      if(!active())return;
+      meta.status=body.outcome;
+      $("feedbackState").textContent=`${({won:"Won",lost:"Lost",withdrawn:"Withdrawn"})[body.outcome]} · Result saved.`;
+      $("feedbackActions").innerHTML=`<a href="/api/tenders/${tender}/postmortem?format=pdf">Download report ↓</a>`;
+      showMessage("Outcome saved.");
+      tenders=await (await fetch("/api/tenders")).json();renderSidebar();
+    } catch(error){showMessage(error.message,true);} finally{button.disabled=false;}
+  };
+  $("gatherOutcomeEvidence").onclick=async event=>{
+    const button=event.target, status=$("publicEvidenceStatus");button.disabled=true;status.textContent="Importing notice…";
+    try {const result=await request("gather-evidence",{urls:[$("feedbackLinks").value.trim()].filter(Boolean)});
+      data=result.feedback;if(active()){showEvidence();if(result.result.errors?.length)status.textContent+=" Some notices could not be imported. Check the project URL.";}
+    }catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+  };
+  $("measurementForm").onsubmit=async event=>{
+    event.preventDefault();const button=$("recordMeasurement"), status=$("measurementMessage");button.disabled=true;
+    try {const target=Object.fromEntries([...panel.querySelectorAll('[data-measure]')].filter(el=>el.value!=="").map(el=>[el.dataset.measure,Number(el.value)]));
+      if(!Object.keys(target).length)throw new Error("Enter at least one measured factor.");
+      const saved=await request("productivity-feedback",{target,expected_revision:data.productivity?.revision||0,verified:$("measurementVerified").checked,measurement_reference:$("measurementReference").value,input:data.productivity?.input||{project_type:calc.project?.name||"ventilation"}});
+      data=saved.feedback;if(active()){showMeasurement();status.textContent="Measurement saved.";}
+    }catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+  };
+  $("revokeMeasurement").onclick=async event=>{
+    const button=event.target;button.disabled=true;
+    try {const saved=await request("revoke-productivity",{expected_revision:data.productivity?.revision||0});
+      data=saved.feedback;if(active()){showMeasurement();$("measurementMessage").textContent="Measurement excluded from learning.";}
+    }catch(error){if(active())$("measurementMessage").textContent=error.message;}finally{button.disabled=false;}
+  };
+  function showMeasurement(){
+    const measurement=data.productivity;
+    panel.querySelectorAll('[data-measure]').forEach(el=>el.value=measurement?.target?.[el.dataset.measure]??"");
+    $("measurementReference").value=measurement?.measurement_reference||"";
+    $("measurementVerified").checked=!!measurement && measurement.verified!==false;
+    $("revokeMeasurement").classList.toggle("hidden",!measurement||measurement.verified===false);
+    $("measurementMessage").textContent=measurement ? (measurement.verified===false ? "Excluded from learning." : "Measurement saved.") : "";
   }
-  async function post(action, body) {
-    const response = await fetch(`/api/tenders/${tender}/${action}`, {
-      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Feedback action failed");
-    if (current !== tender || !$("feedbackPanel")) return;
-    msg().textContent = "Saved. " + JSON.stringify(data.result);
-    await refresh();
+  function showEvidence(){
+    const evidence=data.evidence;
+    $("publicEvidenceStatus").textContent=evidence?.records?.length ? `${evidence.records.length} notice(s) saved.` : "";
+    $("feedbackLinks").value=evidence?.urls?.[0]||"";
   }
-  function handler(button, work) {
-    $(button).addEventListener("click", async event => {
-      event.target.disabled = true;
-      try { await work(); } catch (error) { if (msg()) msg().textContent = error.message; }
-      finally { if (current === tender && $(button)) $(button).disabled = button === "recordSubmission" && $(button).dataset.frozen === "true"; }
-    });
+  $("reopenBtn").onclick=async()=>{
+    try {await request("reopen",{});tenderDrafts.delete(tender);if(active())await loadTender();}
+    catch(error){showMessage(error.message,true);}
+  };
+  if (data) {
+    panel.querySelectorAll("input, select, textarea, button").forEach(el => el.disabled = false);
+    showSubmission();
   }
-  handler("recordSubmission", async () => {
-    if (dirtyFields.size || Number($("overhead").value) !== Number(params.commercial.overhead_pct) ||
-        Number($("waste").value) !== Number(params.allowances.material_waste_pct))
-      throw new Error("Save position changes and restore default overhead/waste before capturing the saved calculation.");
-    const bid = $("feedbackBid").value;
-    await post("submission", {submitted_at:new Date().toISOString(), margin_pct:Number($("margin").value),
-      ...(bid ? {bid_amount_chf:Number(bid)} : {})});
-    $("recordSubmission").disabled = true;
-  });
-  handler("recordOutcome", () => post("outcome", {
-    expected_revision:expectedRevision, outcome:$("feedbackOutcome").value, observed_at:$("feedbackObserved").value === localNow ? new Date().toISOString() : new Date($("feedbackObserved").value).toISOString(),
-    winner:$("feedbackWinner").value, competitors:JSON.parse($("feedbackCompetitors").value || "[]"),
-    verified:$("feedbackVerified").checked, evidence_reference:$("feedbackEvidence").value,
-    reason_codes:$("feedbackReasons").value.split(",").map(s=>s.trim()).filter(Boolean),
-    reasons_confirmed:$("feedbackReasonsConfirmed").checked, narrative:$("feedbackNarrative").value,
-    ...( $("feedbackAward").value ? {award_price_chf:Number($("feedbackAward").value), award_price_comparable:$("feedbackComparable").checked} : {})}));
-  handler("gatherOutcomeEvidence", () => post("gather-evidence", {urls:$("feedbackLinks").value.split(/\s+/).filter(Boolean)}));
-  handler("refreshFeedback", refresh);
-  handler("recordMeasurement", () => post("productivity-feedback", {
-    target:JSON.parse($("measuredFactors").value), measurement_reference:$("measurementReference").value,
-    verified:$("measurementVerified").checked, input:{project_type:calc.project?.name || "ventilation"}}));
-  try { await refresh(); } catch (error) { if (msg()) msg().textContent=error.message; }
+  $("reopenBtn").disabled=false;
 }
 
 /* ------------------------------------------------ settings (models) */
@@ -807,16 +898,11 @@ async function loadSettings() {
   if (view === "settings") renderSettings();
 }
 
-const _sel = (cls, options, value) =>
-  `<select class="${cls}" style="max-width:100%">` +
-  options.map(o => `<option value="${esc(o.v)}" ${o.v === value ? "selected" : ""}>${esc(o.t)}</option>`).join("") +
-  `</select>`;
-
 function renderSettings() {
   $("emptywrap").classList.add("hidden");
   $("welcome").classList.add("hidden");
   $("content").classList.remove("hidden");
-  ["saveBtn", "dlwrap"].forEach(id => $(id).classList.add("hidden"));
+  ["saveBtn", "dlwrap", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
   $("dlMenu").classList.add("hidden");
   $("renameBtn").classList.add("hidden");
   $("dirtyBadge").classList.add("hidden");
@@ -826,23 +912,6 @@ function renderSettings() {
   if (!uiSettings) { loadSettings(); return; }
 
   $("content").innerHTML = `
-    <section class="card">
-<h2>Feedback monitoring</h2><button id="feedbackMonitorRefresh">Refresh monitoring</button><pre id="feedbackMonitor" style="white-space:pre-wrap">No verified outcome history loaded.</pre>
-    </section>
-    <section class="card">
-      <h2>Candidate evaluation</h2>
-      <p class="hint">Upload paired held-out predictions with verified provenance. Evaluation recommends review; it does not activate an adapter.</p>
-      <input type="file" id="candidateScores" accept=".json"><button id="evaluateCandidate">Evaluate candidate</button>
-      <pre id="candidateResult" style="white-space:pre-wrap"></pre>
-    </section>
-    <section class="card">
-      <h2>LoRA per task</h2>
-      <div id="verRows"></div>
-    </section>
-    <section class="card">
-      <h2>Prepare LoRA training data</h2><p class="hint">Public tenders provide market extraction data. Win prediction requires your own submitted bids with verified won/lost outcomes. Preparing data does not train or select an adapter. Upload task JSONL; training awaits a provider with explicit LoRA support. <a href="/api/settings/dataset-format" target="_blank">JSONL schemas and examples</a>.</p>
-      <div id="updRows"></div>
-    </section>
     <section class="card">
       <h2>Productivity factors</h2>
       <div class="pf-head">
@@ -858,124 +927,18 @@ function renderSettings() {
       <h2>Appearance</h2>
       <div class="setrow">
         <b>Dark mode</b>
-        <label class="switch"><input type="checkbox" id="darkToggle"><span class="slider"></span></label>
+        <label class="switch"><input type="checkbox" id="darkToggle" aria-label="Dark mode"><span class="slider"></span></label>
       </div>
     </section>
-    <details class="adv">
-      <summary>Advanced</summary>
-      <div class="advgrid">
-        <div><label>Base model</label><div id="advBase"></div></div>
-        <div><label>Models dir</label><input type="text" id="adv-models"></div>
-        <div><label>LoRAs dir</label><input type="text" id="adv-loras"></div>
-        <div><label>Cache dir</label><input type="text" id="adv-cache"></div>
-      </div>
-      <p class="hint" style="margin:10px 0 0">Changing the base model hides LoRA
-         versions trained for another base until they are retrained.</p>
-    </details>
+    <details class="adv" id="learningDetails"><summary>Learning from completed tenders</summary><div id="learningWorkspace"></div></details>
     <div class="upload-row">
       <button id="saveSettingsBtn" class="primary">Save</button>
       <span id="settingsMsg" class="hint"></span>
     </div>`;
 
-  $("evaluateCandidate").addEventListener("click", async () => {
-    try {
-      const file = $("candidateScores").files[0];
-      if (!file) throw new Error("Choose a JSON file containing evaluation records.");
-      const payload = JSON.parse(await file.text());
-      const response = await fetch("/api/feedback/evaluate", {method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({records:Array.isArray(payload)?payload:payload.records})});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Evaluation failed");
-      if ($("candidateResult")) $("candidateResult").textContent=JSON.stringify(data,null,2);
-    } catch (error) { if ($("candidateResult")) $("candidateResult").textContent=error.message; }
+  $("learningDetails").addEventListener("toggle",()=>{
+    if($("learningDetails").open && !$("learningWorkspace").hasChildNodes())TendifLearning.mount($("learningWorkspace"));
   });
-  $("feedbackMonitorRefresh").addEventListener("click", async () => {
-    try {
-      const response = await fetch("/api/feedback/monitoring"), data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Monitoring unavailable");
-      if ($("feedbackMonitor")) $("feedbackMonitor").textContent = JSON.stringify(data,null,2);
-    } catch (error) { if ($("feedbackMonitor")) $("feedbackMonitor").textContent=error.message; }
-  });
-  $("verRows").innerHTML = TASKS.map(t => `
-    <div class="setrow">
-      <b>${t.label}</b>
-      <div id="ver-${t.key}"></div>
-    </div>`).join("");
-  buildVersionSelects();
-
-  $("updRows").innerHTML = TASKS.map(t => `
-    <div class="updrow" data-task="${t.key}">
-      <b>${t.label}</b>
-      <button class="up-data">Upload data</button>
-      <input type="file" class="up-file" accept=".jsonl" hidden>
-      <input type="text" class="up-links" placeholder="provide links for tenders or tender data">
-      <label><input type="checkbox" class="up-existing" checked> Use collected data and sponsor examples</label>
-      <button class="up-go">Prepare dataset</button>
-      <span class="rowmsg"></span>
-    </div>`).join("");
-  document.querySelectorAll("#updRows .updrow").forEach(row => {
-    const task = row.dataset.task;
-    row.querySelector(".up-links").value = uiSettings.tasks[task].links || "";
-    const file = row.querySelector(".up-file");
-    row.querySelector(".up-data").addEventListener("click", () => file.click());
-    const showJob = job => {
-      const msg = row.querySelector(".rowmsg");
-      msg.textContent = `${job.status}${job.error ? ": " + job.error : ""}`;
-      if (job.manifest?.blockers?.length) msg.textContent += ": " + job.manifest.blockers.join(" ");
-      if (job.awaiting) msg.textContent += " " + job.awaiting;
-      if (job.market_extraction_manifest) msg.textContent += ` Public market extraction: ${job.market_extraction_manifest.status}.`;
-      if (job.collection_errors?.length) msg.textContent += " Collection warnings: " + JSON.stringify(job.collection_errors);
-      for (const name of job.artifacts || []) {
-        const a = document.createElement("a"); a.textContent = name; a.style.marginLeft = "8px";
-        a.href = `/api/settings/jobs/${encodeURIComponent(job.id)}/artifacts/${encodeURIComponent(name)}`;
-        a.download = name; msg.appendChild(a);
-      }
-    };
-    const pollJob = async id => {
-      try {
-        const res = await fetch(`/api/settings/jobs/${encodeURIComponent(id)}`);
-        const job = await res.json();
-        if (!res.ok) throw new Error(job.error || "Cannot load job");
-        if (!row.isConnected || view !== "settings") return;
-        showJob(job);
-        if (["queued", "collecting", "preparing"].includes(job.status)) setTimeout(() => pollJob(id), 1500);
-        else row.querySelector(".up-go").disabled = false;
-      } catch (error) {
-        row.querySelector(".rowmsg").textContent = error.message;
-        row.querySelector(".up-go").disabled = false;
-      }
-    };
-    const previous = (uiSettings.preparation_jobs || []).find(j => j.task === task);
-    if (previous) { showJob(previous); if (["queued", "collecting", "preparing"].includes(previous.status)) pollJob(previous.id); }
-    file.addEventListener("change", async () => {
-      if (!file.files[0]) return;
-      const msg = row.querySelector(".rowmsg");
-      msg.textContent = "validating upload...";
-      try {
-        const res = await fetch(`/api/settings/upload-data?task=${task}&name=${encodeURIComponent(file.files[0].name)}`,
-          { method: "POST", body: file.files[0] });
-        const j = await res.json();
-        msg.textContent = j.ok ? `${j.records} validated records stored` : j.error;
-      } catch (error) { msg.textContent = error.message; }
-      file.value = "";
-    });
-    row.querySelector(".up-go").addEventListener("click", async () => {
-      const msg = row.querySelector(".rowmsg"), button = row.querySelector(".up-go");
-      button.disabled = true; msg.textContent = "starting preparation...";
-      try {
-        const res = await fetch("/api/settings/update", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task, links: row.querySelector(".up-links").value,
-            include_existing: row.querySelector(".up-existing").checked }),
-        });
-        const j = await res.json();
-        if (!res.ok || !j.ok) throw new Error(j.error || "Preparation failed");
-        uiSettings = j.settings;
-        showJob(j.job); pollJob(j.job.id);
-      } catch (error) { msg.textContent = error.message; button.disabled = false; }
-    });
-  });
-
   $("darkToggle").checked = document.body.classList.contains("dark");
   $("darkToggle").addEventListener("change", e => setDarkMode(e.target.checked));
 
@@ -994,7 +957,7 @@ function renderSettings() {
     <div class="setrow">
       <b>${FLD[k]}</b>
       <div class="pf-field">
-        <input type="number" class="pf-val" data-k="${k}" step="0.01" min="0.1" max="3">
+        <input type="number" class="pf-val" data-k="${k}" aria-label="${FLD[k]}" step="0.01" min="0.1" max="3">
         <span class="pf-eff" id="eff-${k}"></span>
       </div>
     </div>`).join("");
@@ -1029,49 +992,23 @@ function renderSettings() {
     }));
   fillPf();
 
-  const adv = uiSettings.advanced;
-  $("advBase").innerHTML = _sel("s-base",
-    uiSettings.base_models.map(b => ({ v: b, t: b })), uiSettings.base_model);
-  $("advBase").querySelector(".s-base").addEventListener("change", e => {
-    uiSettings.base_model = e.target.value;
-    buildVersionSelects();
-  });
-  $("adv-models").value = adv.models_dir;
-  $("adv-loras").value = adv.loras_dir;
-  $("adv-cache").value = adv.cache_dir;
-
   $("saveSettingsBtn").addEventListener("click", saveSettings);
-}
-
-function buildVersionSelects() {
-  TASKS.forEach(t => {
-    const task = uiSettings.tasks[t.key];
-    const options = [{ v: "", t: "none" },
-      ...task.versions.filter(v => v.base === uiSettings.base_model && v.status === "evaluated")
-        .map(v => ({ v: v.version, t: v.version }))];
-    const selected = options.some(o => o.v === task.selected) ? task.selected : "";
-    $("ver-" + t.key).innerHTML = _sel("s-ver", options, selected);
-  });
 }
 
 async function saveSettings() {
   const tasks = {};
   TASKS.forEach(t => tasks[t.key] = {
-    selected: document.querySelector(`#ver-${t.key} .s-ver`)?.value || null,
-    links: document.querySelector(`#updRows .updrow[data-task="${t.key}"] .up-links`)?.value || "",
+    selected: uiSettings.tasks[t.key].selected || null,
+    links: uiSettings.tasks[t.key].links || "",
   });
   collectPf();
   const res = await fetch("/api/settings", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      base_model: document.querySelector("#advBase .s-base")?.value || uiSettings.base_model,
+      base_model: uiSettings.base_model,
       tasks,
       productivity: { mode: pfMode, manual: pfProd?.manual || {}, ai: pfProd?.ai || {} },
-      advanced: {
-        models_dir: $("adv-models").value.trim(),
-        loras_dir: $("adv-loras").value.trim(),
-        cache_dir: $("adv-cache").value.trim(),
-      },
+      advanced: uiSettings.advanced,
     }),
   });
   const j = await res.json();
@@ -1085,7 +1022,9 @@ async function saveSettings() {
   }
 }
 
-$("settingsBtn").addEventListener("click", () => { view = "settings"; renderMain(); });
+$("trainingBtn").addEventListener("click", openTraining);
+
+$("settingsBtn").addEventListener("click", openSettings);
 
 $("navToggle").addEventListener("click", () => {
   const off = document.body.classList.toggle("navoff");
@@ -1108,6 +1047,8 @@ $("createBtn").addEventListener("click", async () => {
   const j = await res.json();
   if (!res.ok) { alert(j.error); return; }
   $("addForm").classList.add("hidden");
+  stashTenderDraft();
+  history.replaceState(null, "", location.pathname);
   await refreshTenders(j.id);
 });
 
@@ -1121,7 +1062,9 @@ $("tenderList").addEventListener("click", async e => {
     return;
   }
   const li = e.target.closest("li[data-id]");
-  if (li && li.dataset.id !== current) {
+  if (li && (li.dataset.id !== current || view !== "tender")) {
+    stashTenderDraft();
+    history.replaceState(null, "", location.pathname);
     current = li.dataset.id;
     renderSidebar();
     await loadTender();
@@ -1156,22 +1099,43 @@ zone.addEventListener("drop", e => {
   if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
 });
 
-$("saveBtn").addEventListener("click", async () => {
+function currentEdits() {
   const edits = {};
   for (const [lv, fields] of dirtyFields) {
-    const tr = document.querySelector(`#posTable tbody tr[data-lv="${lv}"]`);
+    const tr = [...$("posTable").tBodies[0].rows].find(row => row.dataset.lv === lv);
     edits[lv] = Object.fromEntries([...fields].map(f => {
       const v = parseFloat(tr.querySelector(`[data-f="${f}"]`).value);
       return [f, isNaN(v) ? null : v];
     }));
   }
-  const res = await fetch(`/api/tenders/${current}/values`, {
+  return edits;
+}
+
+$("finaliseBtn").addEventListener("click", async () => {
+  const button=$("finaliseBtn"), msg=$("tenderActionMsg"), tender=current;
+  button.disabled=true;msg.classList.remove("hidden");msg.textContent="Saving tender…";
+  try {
+    const response=await fetch(`/api/tenders/${tender}/finalise`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({edits:currentEdits(),margin:Number($("margin").value),overhead:Number($("overhead").value),waste:Number($("waste").value)})});
+    const data=await response.json();if(!response.ok)throw new Error(data.error);
+    tenderDrafts.delete(tender);
+    await refreshTenders(tender);
+    $("feedbackPanel").scrollIntoView({block:"start"});
+    $("feedbackOutcome").focus({preventScroll:true});
+  }catch(error){msg.textContent=error.message;}finally{button.disabled=false;}
+});
+
+$("saveBtn").addEventListener("click", async () => {
+  const tender=current, edits=currentEdits();
+  stashTenderDraft();
+  const res = await fetch(`/api/tenders/${tender}/values`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ edits }),
   });
   const j = await res.json();
   if (!res.ok) { alert(j.error); return; }
-  await loadTender();
+  const draft=tenderDrafts.get(tender);
+  draft.fields.clear(); draft.values=[];
+  if (current === tender && view === "tender") await loadTender();
 });
 
 /* rename the current tender: pencil next to the title, Enter/blur saves, Esc cancels */
@@ -1215,16 +1179,29 @@ $("pdfBtn").addEventListener("click", e => {
 document.addEventListener("click", e => {
   if (!e.target.closest(".dlwrap")) $("dlMenu").classList.add("hidden");
 });
-$("dlMenu").addEventListener("click", e => {
-  const item = e.target.closest("a[data-fmt]");
-  if (!item) return;   // checkbox label clicks just toggle, keep menu open
-  $("dlMenu").classList.add("hidden");
-  const q = `format=${item.dataset.fmt}` +
-            `&margin=${$("margin").value}&overhead=${$("overhead").value}&waste=${$("waste").value}` +
-            `&hide=${$("hideParams").checked ? 1 : 0}` +
-            `&hide_notes=${$("hideNotes").checked ? 1 : 0}`;
-  window.open(`/api/tenders/${current}/pdf?${q}`, "_blank");
+$("dlMenu").addEventListener("click", async e => {
+  const item=e.target.closest("a[data-fmt]");if(!item)return;
+  e.preventDefault();$("dlMenu").classList.add("hidden");
+  const tender=current, edits=currentEdits(), msg=$("tenderActionMsg"), button=$("pdfBtn");
+  const commercial=Object.fromEntries(["margin","overhead","waste"].map(k=>[k,Number($(k).value)]));
+  const query=new URLSearchParams({format:item.dataset.fmt,hide:$("hideParams").checked?"1":"0",hide_notes:$("hideNotes").checked?"1":"0"});
+  button.disabled=true;msg.classList.remove("hidden");msg.textContent="Preparing offer…";
+  try {
+    const response=await fetch(`/api/tenders/${tender}/offers`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commercial,edits})});
+    const offer=await response.json();if(!response.ok)throw new Error(offer.error);
+    query.set("offer",offer.id);
+    const link=document.createElement("a");link.href=`/api/tenders/${tender}/pdf?${query}`;link.download="";
+    document.body.append(link);link.click();link.remove();
+    if(current===tender && view==="tender"){
+      if(!tenderFinished() && Object.keys(edits).length && JSON.stringify(currentEdits())===JSON.stringify(edits)){
+        stashTenderDraft();const draft=tenderDrafts.get(tender);draft.fields.clear();draft.values=[];
+        await loadTender();
+      }
+      if(current===tender && view==="tender"){msg.classList.remove("hidden");msg.textContent="Offer saved and downloaded.";}
+    }
+  }catch(error){if(current===tender && view==="tender")msg.textContent=error.message;}finally{button.disabled=false;}
 });
+
 $("hideParams").checked = localStorage.getItem("autotender_hide_params") === "1";
 $("hideParams").addEventListener("change", e =>
   localStorage.setItem("autotender_hide_params", e.target.checked ? "1" : "0"));
@@ -1232,7 +1209,11 @@ $("hideNotes").checked = localStorage.getItem("autotender_hide_notes") === "1";
 $("hideNotes").addEventListener("change", e =>
   localStorage.setItem("autotender_hide_notes", e.target.checked ? "1" : "0"));
 
-refreshTenders();
+if (window.matchMedia("(max-width: 700px)").matches && localStorage.getItem("autotender_nav") === null) document.body.classList.add("navoff");
+refreshTenders().then(() => {
+  if (location.hash === "#training") openTraining();
+  else if (location.hash === "#settings") { view = "settings"; renderMain(); }
+});
 </script>
 </body>
 </html>

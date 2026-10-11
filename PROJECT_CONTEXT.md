@@ -1,235 +1,343 @@
-# Unified AutoTender context
+# Tendif unified implementation context
 
-Updated 2026-10-10. Start here for future work. This file supersedes conflicting
-assumptions in the six `context_agent_*` research reports; those remain research history.
+Updated 2026-10-11. This is the authoritative project handoff. The historical
+`context_agent_*` reports are research notes; resolve conflicts using this file
+and the executable tests. No credential from the conversation belongs in source,
+UI settings, training files, logs or this document.
 
-## Product and module boundaries
+## Product and user decisions
 
-Equans AutoTender assists a human estimator with ventilation tenders (BKP 244),
-source traceability, catalogue/supplier matching, labour costs and indicative bids.
-It does not autonomously submit offers. `materials/README.md` defines the challenge;
-`materials/expected_output_example.json` defines verified example arithmetic.
+Tendif helps a human estimate ventilation tenders (BKP 244): review
+positions and catalogue matches, calculate material/labour/project cost, compare
+indicative bid scenarios, and learn from evidence after submission. It does not
+submit offers automatically. `materials/README.md` defines the challenge and
+`materials/expected_output_example.json` defines the reference arithmetic.
 
-- `_1_AI_InputProcessing`: proposed PDF segmentation, extraction and catalogue matching.
-  Currently research/todo only. PDF upload stores the document; it does not extract LV positions.
-- `_2_Calculator`: implemented four-step material/labour/direct/project cost pipeline.
-  Uses Decimal half-up money rounding, YAML settings, catalogue/productivity tables,
-  project parameters and per-tender `AUTOTENDER_CALC_OUT` output.
-- `_3_Prediction`: implemented public collection, supervised dataset preparation,
-  persisted preparation jobs, provider handoff and heuristic bid scenarios.
-- `_4_RecursiveImprovement`: implemented immutable submission capture, verified
-  outcome/debrief revisions, public evidence collection, reports, own-bid and
-  measured-productivity feedback, monitoring and candidate review. Remote training
-  and adapter deployment remain pending; no automatic model switch occurs.
-- `web_ui`: localhost stdlib HTTP server; persistent independent tender folders,
-  positions CSV upload, editable calculations, margin/waste/overhead controls,
-  PDF/HTML/DOCX offers and settings. Start `python3 src/web_ui/server.py 8080`.
-- `src/autoTender.py`: implemented CLI with `calculate` (four calculator steps plus
-  prediction) and `prepare` (tracked task datasets, existing corpus/sponsor sources).
+The user rejected a previous UI for bloat, inconsistent styling and layout bugs.
+Preserve the existing tender editor, orange/neutral theme, editable table and
+pricing controls. LoRA work has its own compact sidebar destination with three
+views: Datasets, Source library, Run history. Settings contains productivity and
+appearance; diagnostic monitoring and candidate evaluation are collapsed.
+Active tenders show pricing and positions only: margin chips remain, while the
+extra scenario comparison and implementation disclaimer are removed. **Tender
+finalised** saves edits/commercial choices, locks the estimate and reveals
+**Tender outcome** at the top, with document upload and a short result form.
+Decision details, public notices and actual productivity are collapsed. Reopening
+restores editing and retains existing results/documents. Shared theme tokens keep
+links and controls readable in both themes; there are no default blue links.
 
-Dependencies: Python with PyYAML for the calculator; prediction, collection,
-preparation and UI otherwise use the standard library. Optional local training
-uses PyTorch, transformers, PEFT and accelerate in a separate training environment.
-No GLM credential from the conversation is written into project files or required.
-Research search engine: `http://127.0.0.1:8888/search?q=...&format=json` (SearxNG).
-Search availability/results vary; primary documentation and live API probes take precedence.
+The requested base model is **GLM-5.3-Flash**. Default preparation ID:
+`glm-5.3-flash`; the provider may use another ID, so custom IDs are accepted and
+captured in each preparation run. Existing settings and old runs are retained.
+The user confirms the model/training service will run in **Docker in the cloud**.
+Its endpoint and training API contract have not been provided. Remote upload,
+training, job polling and adapter serving are therefore pending integrations.
+Preparation and review work now; no successful training is implied.
 
-## Corrected assumptions
+## Modules and dependencies
 
-1. Public simap announcements disclose tenders and awards, not all losing bids or
-   Equans's participation, costs or reasons for losing. Never synthesize own losses
-   by assuming everybody except the published winner bid and lost.
-2. The supplied project `d849c22b-3fc4-48d8-94c9-c45457544ab1` currently has tender
-   publication `39697-01`, dated 2026-08-06, and no award. It is a real source example,
-   not a won/lost training label.
-3. Post-award winner price, actual bidder count and debrief reasons are unavailable
-   when bidding. They must not be prediction inputs for that same bid. Historical
-   priors require a temporal cutoff. The old proposed ratio of our price to the
-   eventual award price is target leakage.
-4. Binary confirmed outcomes train outcome classification, not a fabricated numeric
-   probability target. LLM classification output is not automatically calibrated.
-5. Public structured extraction examples train public notice extraction; they do not
-   teach full LV/PDF segmentation or catalogue matching without reviewed LV examples.
-6. Measured productivity labels need evidence. Existing AI productivity suggestions
-   remain editable demo defaults and are not output of a trained adapter.
-7. A chat/completions endpoint does not imply LoRA training or adapter loading support.
-   Friendly UI model names are not guaranteed provider or Hugging Face model IDs.
-8. Dataset readiness, completed training, evaluation and deployment are distinct.
-   Preparing a dataset never creates or selects a working LoRA version.
-9. Golden scenario arithmetic uses the example subset baseline. Live UI predictions
-   use the full project baseline, including services/allowances; those are different.
+- `_1_AI_InputProcessing`: research/todo. PDF upload stores a document; it does
+  not yet extract full LV positions. Sponsor matching examples are not labels
+  for physical PDF-page extraction.
+- `_2_Calculator`: working four-step material/labour/direct/project calculation.
+  Python and PyYAML; Decimal half-up money rounding; catalogue/productivity tables
+  and project parameters. `AUTOTENDER_CALC_OUT` isolates each tender's result.
+- `_3_Prediction`: working simap collection, evidence validation, grouped dataset
+  preparation, persisted jobs, download bundles and heuristic bid scenarios.
+  Standard library. `train_lora.py` is an optional generic causal-LM PEFT trainer,
+  not a validated GLM-5.3 cloud training runtime.
+- `_4_RecursiveImprovement`: immutable bid snapshots, verified outcome revisions,
+  source evidence, debrief reports, revisioned/revocable measured productivity,
+  monitoring and persisted candidate evaluation handoffs/results. Verified exports enter the corresponding `_3` uploads. No automatic
+  model activation. See its readme for detailed payloads.
+- `web_ui`: localhost stdlib HTTP server and dependency-free HTML/CSS/JS. Training
+  code is `static/training.js` / `static/training.css`; tender/settings logic stays
+  in `static/index.html`; `static/learning.js` handles the collapsed review workspace.
+  `static/workspace.css` contains shared accessibility and
+  completed-tender styles. No frontend build step.
+- `src/autoTender.py`: `calculate` runs calculator plus prediction; `prepare`
+  creates persisted task datasets from uploaded and existing sources.
 
-## Serving contract and commercial arithmetic
-
-Calculator flow: positions -> material and labour -> position direct costs ->
-project services/allowances -> overhead baseline -> selling price. Margin is gross
-margin on selling price, not markup: `price = baseline / (1 - margin/100)`.
-Commercial scenario bids round upwards to configured `commercial.round_to_chf`.
-Expected contribution is full-precision heuristic P(win) times (bid minus baseline).
-Displayed probabilities round to two decimals; calculating contribution from the
-rounded display probability will not reproduce the golden example exactly.
-
-`_3_Prediction/predict.py` enriches `calc.json.recommended_bid_range` after UI
-recalculation and edits. `GET /api/tenders/<id>/wincurve?baseline=<CHF>` supports live
-unsaved cost changes; margin movement interpolates the materialized curve locally.
-Three configured scenarios include price, margin, estimated win probability and
-expected contribution. Model metadata says heuristic/untrained/uncalibrated.
-The min/mid/max probability band is +/-5 percentage point sensitivity, bounded by
-configured limits, not a statistical confidence interval. Scenario presets choose
-low/medium/high margins. No selected adapter currently changes prediction serving.
-Unavailable predictions display unavailable rather than old fabricated demo odds.
-
-## Public collection
-
-Use `_3_Prediction/collect/simap.py` for reproducible bounded collection.
-Public API: `https://www.simap.ch/api/publications/v2/project/project-search`
-(GET, language-specific search, `lastItem` pagination), project headers and
-`/api/publications/v1/project/{projectId}/publication-details/{publicationId}`.
-Use German and French vocabulary; searching French terms with `lang=de` misses records.
-Collector archives raw responses, identifiers, source URLs, timestamps and hashes,
-normalizes public tender/award records, preserves null unknowns and deduplicates.
-Bounded requests, retries, timeouts and approved simap URLs protect the local tool.
-Public data remains separate from own-bid supervision. Raw snapshots and generated
-runtime corpora are workspace artifacts, ignored by git.
-
-## Dataset and training workflow
-
-Settings upload accepts validated UTF-8 JSONL task records, not arbitrary PDFs or
-CSV pretending to be training data. Each record requires `project_id`, `input` and
-`target`; schema examples and commands are in `_3_Prediction/readme.md`.
-Win records require own_bid provenance, submission/outcome chronology and confirmed
-won/lost labels; only pre-bid allowed features enter prompts. Productivity records
-need positive finite measured factors and a measurement reference. Input extraction
-records need reviewed supervision. Public API extraction is a separate auxiliary task.
-
-`dataset.py` deduplicates, groups by project, deterministically splits train,
-validation and test, writes chat messages JSONL, rejected reasons and manifest
-counts/hashes. Small data remains blocked pending independent held-out projects;
-win training additionally requires both classes in the training partition.
-These are structural checks, not evidence of enough data for a useful trained model.
-Before deployment use chronological held-out evaluation, Brier/calibration for
-probabilities, task accuracy and comparison against the heuristic baseline.
-
-Settings Update starts an asynchronous persisted preparation job. UI polls status
-and offers artifacts. Restarted unfinished jobs fail explicitly; failures never
-register a successful model. Training request bundles declare dataset hashes,
-base-model/task requirements and awaiting endpoint configuration. No external
-training submission occurs without a provider implementation and capability contract.
-
-`train_lora.py` provides optional actual local PEFT causal-LM LoRA training with
-assistant-only loss, held-out validation, deterministic seed and saved adapter/
-metrics/provenance. It requires an explicit compatible Hugging Face identifier,
-chat template and sufficient hardware; no remote model code is enabled. `--check-only`
-validates files without training dependencies. Output is `trained_unvalidated`,
-never automatically promoted. Tokenizer template mismatch or wholly truncated
-answers stop training. GPU execution has not been validated in this workspace.
-
-The user confirms the future endpoint will support LoRA job creation (probably
-OpenAI-compatible), but its exact contract is unavailable. The endpoint must specify: inference vs training routes, provider model IDs,
-authentication, file upload requirements, job status/cancellation, adapter artifact
-or model identifiers, supported LoRA configuration and evaluation metadata.
-Environment names in the handoff: `AUTOTENDER_TRAINING_ENDPOINT` and
-`AUTOTENDER_TRAINING_API_KEY`; values are not UI-persisted or embedded in artifacts.
-
-## Primary sources checked
-
-- [simap project](https://www.simap.ch/de/project-detail/d849c22b-3fc4-48d8-94c9-c45457544ab1)
-  and live public JSON APIs: supplied project/tender and historical awards verified.
-- [simap legal/API terms](https://www.simap.ch/de/about/legal): collection attribution
-  and correction obligations should accompany downstream redistribution.
-- [Hugging Face PEFT LoRA](https://huggingface.co/docs/peft/main/en/task_guides/lora_based_methods):
-  LoRA configuration and adapter training APIs.
-- [OpenAI supervised fine-tuning](https://developers.openai.com/api/docs/guides/supervised-fine-tuning):
-  current documentation says the fine-tuning platform is winding down and inaccessible
-  to new users. An OpenAI-compatible third-party provider can have different capabilities.
-
-## Validation and remaining boundaries
-
-Golden scenario and calculator regression checks, offline collection/dataset/job
-tests, Python compilation, JavaScript syntax and localhost API smoke checks are
-used for this implementation. See `_3_Prediction/readme.md` for commands.
-No empirical calibrated predictor, actual trained weights, full PDF extraction,
-remote training provider is claimed. The recursive debrief workflow is implemented;
-its feedback remains evidence-gated.
-
-## Completed workspace data and checks
-
-- `src/_3_Prediction/data/collection_manifest.json`: 45 distinct real awards, one
-  supplied tender, zero collection errors, 62 raw snapshots. Awards span
-  2026-06-24 to 2026-10-10; five are French. All 45 have bidder counts; 44 have prices.
-  This bounded sample is not the complete historical simap corpus.
-- `src/_3_Prediction/output/market_extraction/`: 38 training / 4 validation / 4 test
-  structured notice normalization examples with provenance and training request.
-- `src/_3_Prediction/output/sponsor_matching/`: 22 sponsor-reviewed catalogue-matching
-  examples, one project, blocked on independent held-out projects. `prepare_sponsor.py`
-  preserves the supplied PDF hash and avoids inventing extraction supervision.
-  Spot checking physical PDF page 78 shows equipment different from the CSV's
-  page-78 valve rows; review page alignment before using PDF pages as labels.
-- 15 automated collection/dataset/job/API tests passed, both golden regressions passed,
-  Python compilation and JavaScript syntax passed. Isolated localhost API smoke
-  test covered settings, async jobs, artifact downloads, tender creation, full
-  recalculation and overridden-baseline win curves. Optional trainer preflight
-  passed on the real public extraction training/validation files.
-
-## Follow-up implementation
-
-The Settings page includes a separate Public notice extraction task and a checked
-“Use collected data and sponsor examples” option. Existing market records are
-merged/deduplicated with optional fresh collection; raw source hashes are verified.
-Sponsor matching examples are loaded directly for Input processing without manual
-re-upload. Public evidence never fills own-bid outcomes or measured productivity.
-Two real persisted UI jobs were prepared from gathered workspace data: notice
-extraction ready for training, sponsor matching blocked on held-out projects.
-No external provider is needed for these preparation and calculator flows.
-
-CLI examples from repository root:
+Start from repository root:
 
 ```sh
-python3 src/autoTender.py calculate --output /tmp/calculation.json
-python3 src/autoTender.py prepare --task market_extraction --base-model <provider-model-id>
+python3 src/web_ui/server.py 8080
+# http://127.0.0.1:8080/#training
 ```
 
-Use `--exclude-existing` to prepare only uploaded data/new URL sources; use
-`--jobs src/web_ui/training_jobs` to expose CLI-prepared artifacts in Settings.
-The CLI returns nonzero on preparation failure; a blocked dataset remains a
-valid preparation result and carries explicit blockers. Remote upload/training
-and inference remain pending the actual endpoint contract.
+`AUTOTENDER_UI_DATA_DIR` optionally redirects tenders, uploads, settings and jobs
+and feedback reviews for isolated tests/review. Default storage remains `src/web_ui/`. Public corpus
+and sponsor inputs remain shared read-only inputs to preparation. Generated
+corpora, raw snapshots, user tenders, settings and jobs are gitignored.
 
-## Pre-merge verification
+## Calculator and prediction assumptions
 
-Preparation now fails explicitly on missing or altered raw public snapshots,
-with regression coverage. Moved-corpus snapshots can resolve by digest under
-`data/raw/simap/`. Localhost API smoke coverage is checked into the automated
-test suite. Fifteen tests, both golden regressions, Python compilation, JavaScript
-syntax and diff whitespace checks passed before merging into local main.
-Remote refresh could not run because GitHub HTTPS authentication is unavailable.
+Positions -> material/labour -> direct costs -> services/allowances -> overhead
+baseline -> selling price. Margin means gross margin on sale, not markup:
+`price = baseline / (1 - margin_pct/100)`. Scenario bids round upward to configured
+`commercial.round_to_chf`. Expected contribution uses full-precision heuristic
+P(win) multiplied by bid minus baseline. Displayed probability is rounded.
 
-## Recursive improvement implementation
+`predict.py` enriches `calc.json.recommended_bid_range` after recalculation/edits.
+`GET /api/tenders/<id>/wincurve?baseline=<CHF>` evaluates unsaved cost changes.
+Aggressive/Target/Conservative use configured margins. All estimates currently
+remain **heuristic, untrained and uncalibrated**. The +/-5 percentage-point band
+is sensitivity, not statistical confidence. Golden example arithmetic uses the
+example subset baseline; the UI uses full project baseline including services.
 
-`_4_RecursiveImprovement/readme.md` defines API/CLI payloads and persistence.
-Record submission before outcome: snapshot includes calculation, parameters, bid,
-actual margin, frozen probability and hash. Subsequent estimates cannot rewrite it.
-Verified won/lost records with evidence and prospective capture export directly into
-`_3` task uploads. Revisions replace stable records; revocation/withdrawal removes
-old supervision. Backdated submissions and observations preceding capture cannot
-train or measure predictive performance. Public awards never label our participation.
+In-session tender edits and scenario inputs survive visiting Training/Settings
+and returning to the tender. Explicit Save persists position edits. Browser
+reload is not a draft persistence mechanism; it does retain the selected tender.
+Saving positions preserves the current pricing inputs. Finalising saves the
+commercial choices for reloads and later reports. PDF/HTML/DOCX offers and table
+sorting continue to use the existing calculator workflow.
 
-Confirmed reasons remain evidence-attributed; higher bid price and missing supplier
-quotes are descriptive findings, not invented explanations for losing. Missing
-evidence produces an actionable report (Markdown/HTML/PDF). User-confirmed comparable
-CHF competitor prices feed medians. Measured productivity exports separate evidence
-and does not replace active parameters. Changes have locked atomic persistence and
-revision/audit artifacts; Unix file locking is required.
+The user explicitly approved **automatic preservation of downloaded offers**.
+Download saves pending position edits and freezes calculation, chosen margin,
+overhead/waste, descriptions, actual price and probability under
+`feedback/offers/<id>.json`. Identical offers reuse the same snapshot. Frozen offer
+exports ignore later live edits and query-price overrides. The forecast keeps the
+configured reference margin: selecting another margin must move its probability.
 
-Settings monitors verified frozen forecasts: Brier, signed error p-y, calibration
-bins, competitor summaries and drift review hints. Candidate scores need verified
-provenance and held-out chronology, ten paired records and both outcome classes.
-Sample-mean Brier noninferiority margin .02 recommends review only; no statistical
-guarantee or automatic deployment is claimed. Evaluation reviews are archived.
-Existing prepared datasets remain historical artifacts after label correction;
-prepare fresh data before future training. The current heuristic remains fallback.
+Finalisation is a lifecycle marker, not proof of submission. In **Tender outcome**,
+choose the downloaded offer actually submitted and enter its real submission date.
+The selected snapshot supplies the price. A download alone creates no submission.
+Offer preservation must precede submission and the verified outcome to be eligible.
+Downloads first made after completion are excluded. Choosing **Other offer** makes
+a retrospective capture, excluded from win training/calibration. The confirmed
+submission is immutable; subsequent downloads never overwrite it.
 
-Validation adds 20 `_4` tests to the 15 existing `_3` tests: immutable and mutated
-snapshots, custom bid probability/margin, outcome revisions/revocation, chronology,
-verified evidence, public collection boundaries, report escaping, concurrent capture,
-candidate/monitoring gates and end-to-end API/report/export/productivity paths.
+Outcome corrections preserve revision checks and competitor/reason evidence.
+Supporting documents are retained with hashes and are not automatically parsed or
+made into labels. Reports contain the bid, dates, evidence, missing information and
+readable comparisons. Public notice imports accumulate evidence and never infer our
+participation. Actual productivity reloads for editing; archived revisions protect
+corrections, and **Exclude from learning** revokes its current export. Deleting a
+tender removes its active win/productivity exports. Already prepared datasets and
+reviews remain historical: prepare new artifacts after correcting their evidence.
+
+## Evidence boundaries
+
+1. Public tenders/awards disclose procurement information, not Equans's private
+   costs, participation or losing bids. Never invent own losses from other winners.
+2. The supplied simap project `d849c22b-3fc4-48d8-94c9-c45457544ab1` is a real tender
+   source (publication `39697-01`, 2026-08-06). A fresh API collection on this review
+   still returned a tender, not an own-bid outcome.
+3. Post-award prices, bidder counts, winners and debrief explanations cannot be
+   features for predicting that same bid. Historical priors need temporal cutoffs.
+4. Won/lost labels train outcome classification; LLM output is not a calibrated
+   numeric probability. Use verified own bids, chronological evaluation and
+   calibration before replacing the heuristic.
+5. Public structured API normalization is an auxiliary extraction task, distinct
+   from full PDF/LV extraction, catalogue matching and win prediction.
+6. Productivity labels require positive finite measurements and a reference.
+   Current settings' AI factors are demo defaults, not trained adapter output.
+7. Dataset readiness, completed training, evaluated quality and deployed adapters
+   are separate states. Preparation never registers/selects a working adapter.
+
+## Collection and reusable source library
+
+`collect/simap.py` uses simap's public JSON API: project search and headers in v2,
+publication details in v1. API responses are archived with URL, timestamp, SHA-256,
+publication/project identifiers and attribution; unknown values remain null.
+German/French searches use their respective language indexes. Only validated
+HTTPS simap project URLs are accepted; requests are bounded with pacing/retries.
+The public page is a SPA; the public JSON API supplies the usable records.
+
+The UI offers **explicit project collection** separately from an optional
+**historical HVAC award search**. Entering a URL alone does not silently search
+for more awards. The current bounded search collects at most 20 awards over two
+pages per configured term; it is a sample, not the complete archive.
+
+Collection jobs archive their own source snapshots. The Source library combines
+the checked-in-workspace corpus with completed job collections, deduplicated by
+publication ID, preferring newer archived job snapshots. Preparation reuses this
+library without fetching again. No source data is repurposed as an own-bid label.
+Source failures appear in collection results; an empty failed collection cannot
+report success. Hash mismatches or missing raw public snapshots fail preparation.
+
+This workspace has 45 real awards plus the supplied tender (46 publications).
+Source files are local generated artifacts, not guaranteed on a fresh checkout.
+Use Source library -> supplied example / optional historical search to rebuild.
+SearxNG is available at `http://127.0.0.1:8888/search?q=...&format=json`; its initial
+GLM search returned no results. Use primary documentation when search is empty.
+
+## Dataset tasks and artifacts
+
+Task-specific JSONL schemas: `src/_3_Prediction/dataset_formats.md`.
+All records require a project ID, nonempty input and appropriate target.
+
+| Task | Evidence | Current workspace readiness |
+| --- | --- | --- |
+| `market_extraction` | Raw public API snapshots and normalized metadata | 46 examples, 38 train / 4 validation / 4 test |
+| `input_processing` | Reviewed catalogue/position examples | 22 sponsor examples, one project; blocked |
+| `win_ratio` | Own bids with submission/outcome chronology and won/lost labels | Requires verified independent own-bid projects and both classes |
+| `productivity_factors` | Measured factors and measurement references | Requires independent measured project evidence |
+
+`dataset.py` validates and deduplicates examples, groups by project, deterministically
+splits into train/validation/test and writes messages JSONL. Project overlap is
+prevented, but this default split is **not a chronological backtest**. Structural
+readiness alone is not enough data or evidence of useful model quality.
+
+Each new preparation produces:
+
+- `train.jsonl`, `validation.jsonl`, `test.jsonl` (system/user/assistant messages).
+- `manifest.json`: task/model, accepted/rejected/split/project counts, assignments,
+  source-file digests, artifact hashes, status and blockers.
+- `examples.json`: split/line/project mapping, example fingerprints, source
+  provenance or measurement/bid chronology, submission hash, outcome/measurement
+  revision and evidence reference outside the model prompt. Its own hash
+  is in the manifest. This preserves source review without leaking evidence fields
+  into bid prediction inputs.
+- `rejected.json`: validation/duplicate reasons.
+- `training_request.json`: intended model, LoRA operation/proposed settings,
+  cloud Docker execution expectation, hashes, evidence blockers and evaluation
+  requirements. `submission_status` remains `not_submitted`.
+- `dataset_bundle.zip`: the above files for review/handoff. The held-out test file
+  is included for later evaluation; the request explicitly forbids training on it.
+
+Jobs persist across reloads; interrupted preparation/collection is marked failed
+on server restart. Old runs remain downloadable. Sources apply only to relevant
+tasks: public corpus to notice extraction, sponsor records to tender matching,
+uploaded/internal feedback to the corresponding task. This avoids unrelated
+public-source failures blocking a productivity or own-bid dataset.
+
+## UI/API contracts
+
+| Route | Behavior |
+| --- | --- |
+| `GET /api/training` | Source inventory, uploaded evidence, runs, credential presence only |
+| `POST /api/training/collect` | `{urls: [...], search_hvac: false}` -> persisted collection job |
+| `POST /api/training/prepare` | `{task, base_model, include_existing: true}` -> persisted preparation |
+| `GET /api/training/<job>/preview?split=train` | At most three examples with evidence metadata |
+| `POST /api/settings/upload-data?task=...&name=...jsonl` | Atomic validated UTF-8 JSONL upload |
+| `GET /api/settings/jobs/<job>` | Persisted status, errors, manifest and artifact names |
+| `GET /api/settings/jobs/<job>/artifacts/<name>` | Allowlisted artifact download |
+| `POST /api/tenders/<id>/offers` | Save pending edits and freeze chosen offer; returns offer ID |
+| `GET /api/tenders/<id>/pdf?offer=<id>&format=pdf\|html\|docx` | Export frozen offer |
+| `POST /api/tenders/<id>/submission` | Confirm `{offer_id, submitted_at}` or capture retrospective manual bid |
+| `POST /api/tenders/<id>/finalise` | Save `{edits, margin, overhead, waste}` and lock estimate |
+| `POST /api/tenders/<id>/reopen` | Restore editing without discarding outcome evidence |
+| `GET /api/tenders/<id>/completion-documents` | List supporting documents |
+| `POST /api/tenders/<id>/completion-documents?name=...` | Raw document, finalised tender only, 1 byte–20 MB |
+| `GET /api/tenders/<id>/completion-documents/<document-id>` | Opaque-ID attachment download |
+
+Legacy `/api/settings/update` remains supported for task URLs and preparation,
+with explicit-source collection only. CLI `prepare --url` has the same behavior.
+Use `--jobs src/web_ui/training_jobs` to show CLI runs in the UI's Run history.
+
+## `_4` evaluation preparation and review
+
+The local phase is implemented at the same endpoint-pending boundary as `_3`.
+**Settings → Learning from completed tenders** shows compact outcome/forecast
+metrics and persistent candidate reviews. It remains collapsed by default.
+`POST /api/feedback/reviews` prepares from verified prospective snapshots using
+the configured model ID. At least 10 bids and both won/lost outcomes are required;
+insufficient bundles remain downloadable with blockers.
+
+Runtime `feedback_reviews/<id>/` contains input JSONL, request, manifest and ZIP.
+The ZIP exposes only tender IDs, prebid features, input hashes and the response
+contract. Labels, evidence references and baseline probabilities stay in local
+`reference.json`, outside the inference request. Nothing is sent remotely.
+
+`POST /api/feedback/reviews/<id>/evaluate` imports a candidate response bound to
+that review and its exact input hashes/case set. It requires the candidate ID,
+verified source provenance, timezone-aware generation dates, an earlier training
+cutoff and a complete training-project list excluding every evaluation project.
+Results use local frozen labels and baseline forecasts. Corrected/revoked source
+outcomes, training overlap, missing cases or integrity failures block import.
+Provider lineage is declared evidence until an authenticated provider contract
+can verify it. The app cannot establish remote training provenance on its own.
+
+A descriptive Brier comparison uses the existing 0.02 noninferiority margin.
+Results/provenance persist across reloads and download through allowlisted
+`GET /api/feedback/reviews/<id>/artifacts/<name>`. Review history is available at
+`GET /api/feedback/reviews`; legacy external paired-record reviews remain supported.
+Passing recommends human review; it never activates, promotes or trains a model.
+CLI `feedback prepare-review`, `review`, `productivity` and `revoke-productivity`
+share the implementation. `_4/readme.md` documents payloads and commands.
+
+## Cloud training integration still required
+
+Z.ai documents API model ID `glm-5.3-flash`. The official HF weights are
+`zai-org/GLM-5.3-Flash`, a multimodal `glm5_next` architecture. A compatible chat
+endpoint confirms inference only. It does not confirm a training API, PEFT
+support, target modules, the correct chat-template/assistant-loss mask, GPU
+capacity, training precision, or adapter loading support.
+
+When the Docker service is supplied, verify its model/framework versions and
+connect authenticated file upload, idempotent job creation, status/polling,
+cancellation, failure/restart semantics, artifact download and adapter IDs.
+Environment variables: `AUTOTENDER_TRAINING_ENDPOINT`,
+`AUTOTENDER_TRAINING_API_KEY`. They are never browser-persisted or embedded in
+bundles. Mere environment configuration does not activate remote submission.
+
+The generic `train_lora.py` plus `requirements-training.txt` supports optional
+compatible causal LMs with assistant-only loss and saved metrics. Its dependency
+range and model loader are **not validated for GLM-5.3-Flash**. Do not describe it
+as the cloud GLM worker. `--check-only` validates dataset structure, not model
+compatibility or GPU readiness. No weights were trained in this workspace.
+
+Before deployment: evaluate held-out extraction/matching quality or measured-factor
+error; for bid probabilities use chronological own-bid evaluation, Brier/calibration,
+class coverage and comparison with the current heuristic. `_4` candidate review
+records evidence and comparisons but does not automatically deploy adapters.
+
+## Primary sources verified
+
+- Model API ID: https://docs.z.ai/guides/vlm/glm-5.3-flash
+- Official weights/architecture: https://huggingface.co/zai-org/GLM-5.3-Flash
+- simap project and fresh public API collection:
+  https://www.simap.ch/de/project-detail/d849c22b-3fc4-48d8-94c9-c45457544ab1
+- LoRA implementation reference:
+  https://huggingface.co/docs/peft/main/en/task_guides/lora_based_methods
+
+## Verification commands
+
+From repository root:
+
+```sh
+python3 -m unittest discover -s src/_3_Prediction/tests -v
+python3 -m unittest discover -s src/_4_RecursiveImprovement/tests -v
+python3 -m unittest discover -s src/web_ui/tests -p 'test_*.py' -v
+python3 src/_3_Prediction/validate.py
+python3 src/_2_Calculator/validate.py
+# Optional browser environment: playwright + Chromium + PyYAML
+python3 src/web_ui/tests/browser_training.py
+python3 src/web_ui/tests/browser_feedback.py
+```
+
+The browser script starts its own server with temporary storage. It checks real
+preparation, preview/split selection, bundle download, blocked sponsor evidence,
+invalid/valid uploads, source filtering, run history, tender upload/edit/save,
+draft navigation, finalisation/reopening, result corrections, document upload and
+download, HTML-safe CSV rendering, dark mode and 1440/900/390px layouts. Runtime data used by the
+browser suite is removed afterward. The workspace corpus is read, never modified.
+
+Earlier baseline review: 43 backend tests passed (15 prediction/data, 20 feedback,
+8 workspace API), both golden arithmetic checks passed, JavaScript syntax and
+Python compilation passed. The real-browser workflow above passed. A live simap
+import returned one source with zero errors; GLM-targeted public preparation
+returned 38/4/4 with preserved hashes. Dataset-only trainer preflight passed;
+remote/model-specific GPU training remains untested and unconnected.
+
+The follow-up UI review also used Ponytail's coding/review skills and an axe-core
+4.10.3 browser audit. Checked active/finalised tenders, Settings, Training and
+Source library in light/dark themes, plus the mobile outcome form. All ten
+checked screens passed the selected WCAG 2 A/AA and 2.1 AA automated rules after
+fixing contrast, missing field labels and keyboard access to the positions scroller.
+This is an automated check, not a full manual accessibility certification.
+
+The `_4` follow-up adds regressions for preserved downloads/unsaved edits, immutable
+export prices, later submission confirmation, retrospective exclusion, measurement
+correction/revocation/retry, independent review bundles, input/hash/chronology gates,
+source corrections, persistence/restart and reference-label isolation. The second
+browser suite imports candidate results, checks review history/downloads and uses
+axe when locally available; all evidence in these tests is synthetic and temporary.
+
+Verified after this follow-up: **53 backend tests pass** (16 prediction/data,
+28 feedback, 9 workspace API). Both Playwright browser workflows pass. Axe checks
+pass for the ten existing screens and three additional candidate-review layouts
+(light, dark and mobile). JSON-bound CLI preparation/import, Python compilation,
+JavaScript syntax and diff whitespace checks pass. No cloud API calls, model
+training or adapter activation were performed; those still require the endpoint.

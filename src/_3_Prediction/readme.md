@@ -32,9 +32,9 @@ ratios leak outcomes and their example LLM probability targets are invented.
 ## Collection and dataset preparation
 
 See [collector usage](collect/README.md) and [task JSONL schemas](dataset_formats.md).
-Settings → Prepare dataset starts a tracked preparation job, polls progress and
-provides downloadable JSONL, manifests and the training handoff. A provided simap
-project URL also triggers a bounded multilingual historical award search. Public
+LoRA training → Datasets → Prepare dataset starts a tracked preparation job, polls progress and
+provides downloadable JSONL, manifests and the training handoff. The Source library collects explicit project URLs; historical award search is
+an opt-in checkbox. A URL alone does not launch additional searches. Public
 notice extraction is offered as a separate auxiliary zip; it does not label own bids.
 
 The current workspace contains 45 real market awards and the provided tender,
@@ -42,18 +42,16 @@ with source snapshots in `data/` (generated, gitignored). Rebuild/extend through
 `collect/simap.py`. Prepare the entire archived corpus without additional requests:
 
 ```sh
-python3 src/_3_Prediction/prepare_market.py --base-model Qwen3-32B
-python3 src/_3_Prediction/prepare_sponsor.py --base-model GLM-4.6
+python3 src/_3_Prediction/prepare_market.py --base-model glm-5.3-flash
+python3 src/_3_Prediction/prepare_sponsor.py --base-model glm-5.3-flash
 ```
 
-The supplied model names are placeholders for preparation; replace them with actual
-provider/Hugging Face IDs before training. Market metadata extraction currently has
+The provider model ID is configurable; `glm-5.3-flash` is the requested default.
+The official weight repository uses `zai-org/GLM-5.3-Flash`. Market metadata extraction currently has
 38 train / 4 validation / 4 test examples. Sponsor materials produce 22 reviewed
 catalogue-matching examples with PDF provenance, all from one project: its manifest
 is blocked pending independent validation/test projects. These matching examples
-use sponsor CSV descriptions, not assumed physical PDF page alignment. To include
-them in the settings preparation flow, upload
-`output/sponsor_matching/sponsor_matching.jsonl` under Input processing.
+use sponsor CSV descriptions, not assumed physical PDF page alignment. The Tender matching task can load these sponsor examples directly.
 
 ## Local LoRA training and future endpoint
 
@@ -67,14 +65,16 @@ python3 src/_3_Prediction/train_lora.py --model <actual-model-id> \
   --output /path/to/new-adapter --check-only
 ```
 
-Remove `--check-only` to train locally. The trainer uses LoRA, assistant-only loss,
+For a compatible generic causal LM, remove `--check-only` to train locally.
+The local trainer and dependency versions are not a validated GLM-5.3 runtime;
+that multimodal model is intended for the user-managed cloud Docker provider. The trainer uses LoRA, assistant-only loss,
 held-out validation and saved adapter metrics/provenance; it never activates weights.
 Local GPU training has not been run here. Evaluate the held-out test file separately
 before deployment. Market extraction evaluation is a structured JSON accuracy task;
 win probabilities require verified own bid labels and calibration beyond token loss.
 
-The future endpoint is confirmed to support LoRA job creation, with its exact
-contract pending. `training_request.json` provides data hashes, files, task/base
+The intended provider will run in cloud Docker. Its LoRA job API contract and
+endpoint are pending. `training_request.json` provides data hashes, files, task/base
 model and required completion/evaluation fields. Configuring environment variables
 alone does not submit anything: provider file upload, create/poll/download and
 adapter-serving routes must be connected once their contract is known.
@@ -97,10 +97,13 @@ productivity overrides.
 
 `python3 src/autoTender.py prepare --task market_extraction --base-model <model-id>`
 prepares the archived real corpus through tracked jobs without network access.
-The same workflow is available in Settings → Public notice extraction.
-“Use collected data and sponsor examples” is checked by default; uncheck it to
-exclude archived records and the sponsor's matching examples. The CLI equivalent
+The same workflow is available in LoRA training → Public notices.
+The existing-evidence checkbox is checked by default for public notices and
+sponsor matching; uncheck it to prepare from uploads only. The CLI equivalent
 is `--exclude-existing`. Add `--url <simap-project-url>` for fresh bounded collection.
-Use `--jobs src/web_ui/training_jobs` to make CLI job artifacts appear in Settings.
+Use `--jobs src/web_ui/training_jobs` to make CLI job artifacts appear in Run history.
 The sponsor input-processing dataset remains one project and does not acquire
 win/loss labels simply because the public corpus is included.
+
+New jobs include `dataset_bundle.zip` and hashed `examples.json` evidence mapping.
+See the unified context for the review APIs and cloud integration boundary.
