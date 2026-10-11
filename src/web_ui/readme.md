@@ -96,7 +96,9 @@ Choices, paths, parameters and the latest update request per task persist in thi
 browser's `tendif_lora_preferences_v1` localStorage entry. Existing version metadata
 comes from `/api/settings`; selecting it does not certify, activate or retrain an
 adapter. Update requests capture the selected version/base, source choices, links,
-data directory, selected-file metadata and parameters. File objects stay in the
+selected-file metadata, parameters and execution choice. Local requests include
+filesystem paths; cloud requests include only the cloud endpoint, which can be
+pending. File objects stay in the
 current browser session; after reloading, a reminder asks for the files again.
 File contents are not uploaded or stored in localStorage. Requests are not submitted
 to a remote queue. The saved
@@ -104,8 +106,12 @@ example count comes from Tendif's current inventory; custom directories are not 
 
 **Advanced** contains:
 
-- **Configuration**: model/LoRA/data/cache directories and per-task rank, alpha,
-  dropout, epochs and learning rate. These also belong to the local UI preview.
+- **Configuration**: choose **Local** or **Cloud** for the model service. Cloud
+  is the default and shows an optional endpoint field; it can be supplied later.
+  Local shows model/LoRA/data/cache directories. Switching preserves both sets
+  of values. Per-task rank, alpha, dropout, epochs and learning rate apply to
+  either choice. These remain browser-local preview settings; no connection is
+  tested or started. Endpoint URLs must use HTTP(S) without embedded credentials.
 - **Data preparation**: the working dataset tools, with model ID, **Save as default**,
   existing-source selection, validated JSONL imports, example previews, split
   counts and downloadable bundles. Tender results and measurements can be opened

@@ -20,7 +20,7 @@ pricing controls. **LoRA settings** has two tabs. **LoRAs** follows the original
 processing, productivity factors and success probability. Selecting a version
 also chooses its base model; changing a task's base clears an incompatible LoRA.
 Manual expert productivity remains an explicit fallback. **Advanced** contains
-Configuration (paths and per-task LoRA parameters), Data preparation, Sources
+Configuration (Local/Cloud service, paths/endpoint and per-task LoRA parameters), Data preparation, Sources
 History and Evaluation. Public-notice extraction remains an admin dataset task. This is a UI split,
 not an authentication boundary; the server remains localhost-only with no auth.
 General Settings contains productivity and appearance. Outcome monitoring and
@@ -45,7 +45,15 @@ in browser localStorage (`tendif_lora_preferences_v1`), separately from live
 calculator factors, server settings and preparation jobs. Version metadata is
 read from settings; no metadata is promoted to a verified or active adapter.
 The latest request per task captures base/version, internal-data selection,
-links, data directory and proposed LoRA parameters with a timestamp. The UI
+links, execution configuration and proposed LoRA parameters with a timestamp.
+Configuration offers **Local / Cloud**, defaulting to Cloud for the planned
+deployment. Local displays filesystem paths; Cloud displays an optional HTTP(S)
+service endpoint. Both configurations survive switching and reloads. Preview
+requests carry `execution: {mode: 'local', paths: {...}}` or
+`execution: {mode: 'cloud', endpoint: URL-or-null}`; cloud requests have no local
+filesystem paths. Empty cloud endpoints are allowed while awaiting the service;
+invalid URLs and embedded credentials are rejected. No connection checks or
+runtime activation are performed. The UI
 also offers **Upload data** for every task, with multiple files, sizes and removal.
 File objects stay separate per task for the current session; only their metadata
 is retained in saved requests. After reloading, the UI asks for files to be selected
@@ -386,3 +394,9 @@ configuration, and asserts that no backend writes occur from the preview. All 12
 axe/layout combinations of Select LoRAs, Base models, Update LoRAs and Configuration
 in light/dark/390px mobile layouts pass. Existing dataset preparation and tender
 editing/finalisation/download workflows still pass with their new Advanced navigation.
+
+Local/Cloud configuration verification: the LoRA browser workflow passes default
+Cloud selection, pending endpoint saves, Local path persistence, switching/reloads,
+invalid endpoint rejection and mode-specific update request snapshots. The six
+Local/Cloud light/dark/mobile combinations pass axe and overflow checks. No
+connection or model execution was attempted.

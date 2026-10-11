@@ -18,7 +18,9 @@ window.TendifLoras = (() => {
   function load() {
     let saved={};
     try{saved=JSON.parse(localStorage.getItem(storageKey))||{};}catch{}
-    const value={tasks:{},advanced:{...settings.advanced,data_dir:'/data/training',...saved.advanced},requests:saved.requests||{}};
+    const value={tasks:{},advanced:{...settings.advanced,data_dir:'/data/training',...saved.advanced,
+      execution_mode:saved.advanced?.execution_mode==='local'?'local':'cloud',
+      cloud_endpoint:typeof saved.advanced?.cloud_endpoint==='string'?saved.advanced.cloud_endpoint:''},requests:saved.requests||{}};
     for(const t of tasks){
       const prior=saved.tasks?.[t.key]||{},source=settings.tasks[t.key]||{};
       const initial=versions(t.key).find(v=>v.version===source.selected&&v.base===settings.base_model);
@@ -34,6 +36,17 @@ window.TendifLoras = (() => {
     const box=$('lm-message');box.textContent=text;box.hidden=!text;box.className='lm-message'+(error?' tr-error':'');
   }
   function save(text='Choices saved in this browser.') {
+    if(prefs.advanced.execution_mode==='cloud'&&prefs.advanced.cloud_endpoint.trim()){
+      try{
+        const url=new URL(prefs.advanced.cloud_endpoint.trim());
+        if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error();
+      }catch{
+        const error='Use an http:// or https:// cloud endpoint without embedded credentials.';
+        message(error,true);
+        if($('lm-cloud-endpoint')){$('lm-cloud-endpoint').setCustomValidity(error);$('lm-cloud-endpoint').reportValidity();}
+        return false;
+      }
+    }
     try{localStorage.setItem(storageKey,JSON.stringify(prefs));message(text);return true;}
     catch{message('Could not save. Allow browser storage and try again.',true);return false;}
   }
@@ -86,7 +99,7 @@ window.TendifLoras = (() => {
       <input type="file" id="lm-files" multiple hidden><div id="lm-file-list" aria-live="polite"></div>
       <p class="tr-help" id="lm-file-reminder" hidden>Files from the previous request need to be selected again after reloading.</p>
       <label class="tr-field lm-links">Additional data links <span>(optional · one per line)</span><textarea id="lm-links" rows="3" maxlength="4000" placeholder="https://…">${escape(choice.links)}</textarea></label>
-      <div class="lm-footer"><button class="primary">${version?'Update LoRA':'Create LoRA'}</button><span>Training service not connected</span></div>
+      <div class="lm-footer"><button class="primary">${version?'Update LoRA':'Create LoRA'}</button><span>${prefs.advanced.execution_mode==='local'?'Local · service not connected':prefs.advanced.cloud_endpoint.trim()?'Cloud · service not connected':'Cloud · endpoint pending'}</span></div>
       <p id="lm-request" class="tr-help" ${prefs.requests[task]?'':'hidden'}>${prefs.requests[task]?'Update request saved · '+escape(new Date(prefs.requests[task].saved_at).toLocaleString()):''}</p>
     </form>`;
     $('lm-internal').onchange=e=>{choice.include_internal=e.target.checked;};
@@ -106,14 +119,17 @@ window.TendifLoras = (() => {
         $('lm-links').setCustomValidity('Use complete http:// or https:// links, one per line.');$('lm-links').reportValidity();return;
       }
       if(!choice.include_internal&&!links.length&&!files[task]?.length){message('Choose internal training data, upload files or add a link.',true);return;}
+      const previous=prefs.requests[task],config=prefs.advanced;
       prefs.requests[task]={task,base_model:choice.base_model,adapter:version?{version:version.version,base:version.base,adapter_id:version.adapter_id}:null,
-        include_internal:choice.include_internal,links,data_dir:prefs.advanced.data_dir,
+        include_internal:choice.include_internal,links,
+        execution:config.execution_mode==='cloud'?{mode:'cloud',endpoint:config.cloud_endpoint.trim()||null}:
+          {mode:'local',paths:{models_dir:config.models_dir,loras_dir:config.loras_dir,data_dir:config.data_dir,cache_dir:config.cache_dir}},
         files:(files[task]||[]).map(f=>({name:f.name,size:f.size,type:f.type,last_modified:f.lastModified})),
         parameters:{...choice.parameters},saved_at:new Date().toISOString()};
       if(save('Update request saved. Waiting for the training service.')){
         $('lm-request').hidden=false;$('lm-request').textContent='Update request saved · '+new Date(prefs.requests[task].saved_at).toLocaleString();
         renderFiles();
-      }
+      }else if(previous)prefs.requests[task]=previous;else delete prefs.requests[task];
     };
   }
   function renderFiles() {
@@ -124,12 +140,17 @@ window.TendifLoras = (() => {
     host.querySelectorAll('[data-lm-remove]').forEach(button=>button.onclick=()=>{files[task].splice(Number(button.dataset.lmRemove),1);renderFiles();$('lm-upload').focus();});
   }
   function renderAdvanced() {
-    $('lm-panel').innerHTML=`<form id="lm-advanced" class="tr-card lm-card"><h3>Paths &amp; LoRA parameters</h3>
-      <p>Configure the model service. These preview settings are stored locally.</p>
-      <div class="lm-fields">${[['models_dir','Base models directory'],['loras_dir','LoRA directory'],['data_dir','Internal training data directory'],['cache_dir','Cache directory']].map(([key,label])=>`<label class="tr-field">${label}<input data-lm-path="${key}" value="${escape(prefs.advanced[key])}" required maxlength="300" spellcheck="false"></label>`).join('')}</div>
+    const config=prefs.advanced,cloud=config.execution_mode==='cloud';
+    $('lm-panel').innerHTML=`<form id="lm-advanced" class="tr-card lm-card"><h3>Model service &amp; LoRA parameters</h3>
+      <p>Choose where base models and LoRAs run.</p>
+      <div class="tr-task-tabs" role="group" aria-label="Model location">${['local','cloud'].map(mode=>`<button type="button" data-lm-runtime="${mode}" class="${config.execution_mode===mode?'selected':''}" aria-pressed="${config.execution_mode===mode}">${mode==='local'?'Local':'Cloud'}</button>`).join('')}</div>
+      ${cloud?`<label class="tr-field">Cloud endpoint<input id="lm-cloud-endpoint" type="url" value="${escape(config.cloud_endpoint)}" placeholder="https://your-service.example" maxlength="1000" spellcheck="false"></label><p class="tr-help">Your cloud service endpoint can be added later.</p>`:
+        `<div class="lm-fields">${[['models_dir','Base models directory'],['loras_dir','LoRA directory'],['data_dir','Internal training data directory'],['cache_dir','Cache directory']].map(([key,label])=>`<label class="tr-field">${label}<input data-lm-path="${key}" value="${escape(config[key])}" required maxlength="300" spellcheck="false"></label>`).join('')}</div>`}
       <div class="lm-parameters"><h4>Training parameters</h4>${taskTabs()}<div class="lm-fields lm-numbers">${[['rank','Rank',1,256,1],['alpha','Alpha',1,1024,1],['dropout','Dropout',0,.9,.01],['epochs','Epochs',.1,100,.1],['learning_rate','Learning rate',.000001,.1,.000001]].map(([key,label,min,max,step])=>`<label class="tr-field">${label}<input type="number" data-lm-parameter="${key}" value="${escape(prefs.tasks[task].parameters[key])}" min="${min}" max="${max}" step="${step}" required></label>`).join('')}</div></div>
       <div class="lm-footer"><button class="primary">Save configuration</button></div>
     </form>`;
+    host.querySelectorAll('[data-lm-runtime]').forEach(button=>button.onclick=()=>{config.execution_mode=button.dataset.lmRuntime;render();host.querySelector(`[data-lm-runtime="${config.execution_mode}"]`).focus();});
+    if($('lm-cloud-endpoint'))$('lm-cloud-endpoint').oninput=e=>{config.cloud_endpoint=e.target.value;e.target.setCustomValidity('');};
     host.querySelectorAll('[data-lm-path]').forEach(input=>input.oninput=()=>{prefs.advanced[input.dataset.lmPath]=input.value;});
     host.querySelectorAll('[data-lm-parameter]').forEach(input=>input.oninput=()=>{if(input.validity.valid)prefs.tasks[task].parameters[input.dataset.lmParameter]=Number(input.value);});
     $('lm-advanced').onsubmit=e=>{e.preventDefault();save('Configuration saved in this browser.');};

@@ -62,6 +62,14 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#lm-input_processing option:checked')).to_contain_text('Tender reader v2')
             page.get_by_role('button', name='Save choices', exact=True).click()
             page.get_by_role('button', name='Advanced', exact=True).click()
+            expect(page.get_by_role('button', name='Cloud', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('#lm-cloud-endpoint')).to_have_value('')
+            expect(page.locator('[data-lm-path]')).to_have_count(0)
+            page.get_by_role('button', name='Save configuration', exact=True).click()
+            expect(page.locator('#lm-message')).to_contain_text('Configuration saved')
+            page.get_by_role('button', name='Local', exact=True).click()
+            expect(page.get_by_role('button', name='Local', exact=True)).to_be_focused()
+            expect(page.locator('#lm-cloud-endpoint')).to_have_count(0)
             page.locator('[data-lm-path="data_dir"]').fill('/data/reviewed-tenders')
             page.locator('[data-lm-parameter="rank"]').fill('32')
             page.get_by_role('button', name='Save configuration', exact=True).click()
@@ -102,7 +110,9 @@ with tempfile.TemporaryDirectory() as temp:
             request = saved['requests']['input_processing']
             assert request['adapter']['version'] == 'Tender reader v2'
             assert request['base_model'] == request['adapter']['base'] == 'glm-5.3-flash'
-            assert request['data_dir'] == '/data/reviewed-tenders'
+            assert request['execution']['mode'] == 'local'
+            assert request['execution']['paths']['data_dir'] == '/data/reviewed-tenders'
+            assert 'endpoint' not in request['execution']
             assert request['parameters']['rank'] == 32
             assert request['include_internal'] and len(request['links']) == 2
             page.get_by_role('button', name='Productivity factors', exact=True).click()
@@ -117,6 +127,47 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#lm-request')).to_contain_text('Update request saved')
             expect(page.locator('#lm-file-list')).to_be_empty()
             expect(page.locator('#lm-file-reminder')).to_be_visible()
+            # Execution choices persist; switching to cloud preserves local paths.
+            page.get_by_role('button', name='Advanced', exact=True).click()
+            expect(page.get_by_role('button', name='Local', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('[data-lm-path="data_dir"]')).to_have_value('/data/reviewed-tenders')
+            page.get_by_role('button', name='Cloud', exact=True).click()
+            expect(page.locator('[data-lm-path]')).to_have_count(0)
+            expect(page.locator('[data-lm-parameter="rank"]')).to_have_value('32')
+            page.locator('#lm-cloud-endpoint').fill('ftp://training.example')
+            page.get_by_role('button', name='Save configuration', exact=True).click()
+            expect(page.locator('#lm-message')).to_contain_text('Use an http:// or https:// cloud endpoint')
+            # An invalid endpoint must not overwrite the last saved update request.
+            previous = page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1")).requests.input_processing')
+            page.get_by_role('button', name='LoRAs', exact=True).click()
+            page.get_by_role('button', name='Update LoRA', exact=True).click()
+            expect(page.locator('#lm-message')).to_contain_text('Use an http:// or https:// cloud endpoint')
+            assert page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1")).requests.input_processing') == previous
+            page.get_by_role('button', name='Advanced', exact=True).click()
+            page.locator('#lm-cloud-endpoint').fill('')
+            page.get_by_role('button', name='Save configuration', exact=True).click()
+            page.get_by_role('button', name='LoRAs', exact=True).click()
+            expect(page.locator('.lm-footer')).to_contain_text('Cloud · endpoint pending')
+            page.get_by_role('button', name='Update LoRA', exact=True).click()
+            saved = page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1"))')
+            assert saved['requests']['input_processing']['execution'] == {'mode': 'cloud', 'endpoint': None}
+            assert 'data_dir' not in saved['requests']['input_processing']
+            page.get_by_role('button', name='Advanced', exact=True).click()
+            page.locator('#lm-cloud-endpoint').fill('https://training.example/v1')
+            page.get_by_role('button', name='Save configuration', exact=True).click()
+            page.get_by_role('button', name='LoRAs', exact=True).click()
+            page.get_by_role('button', name='Update LoRA', exact=True).click()
+            saved = page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1"))')
+            assert saved['requests']['input_processing']['execution'] == {'mode': 'cloud', 'endpoint': 'https://training.example/v1'}
+            page.reload()
+            page.get_by_role('button', name='Advanced', exact=True).click()
+            expect(page.get_by_role('button', name='Cloud', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(page.locator('#lm-cloud-endpoint')).to_have_value('https://training.example/v1')
+            page.get_by_role('button', name='Local', exact=True).click()
+            expect(page.locator('[data-lm-path="data_dir"]')).to_have_value('/data/reviewed-tenders')
+            page.get_by_role('button', name='Cloud', exact=True).click()
+            expect(page.locator('#lm-cloud-endpoint')).to_have_value('https://training.example/v1')
+            page.get_by_role('button', name='LoRAs', exact=True).click()
             page.get_by_role('button', name='Select LoRAs', exact=True).click()
             page.get_by_role('link', name='Edit expert productivity values', exact=False).click()
             expect(page.locator('#pfRows')).to_be_visible()
@@ -124,7 +175,7 @@ with tempfile.TemporaryDirectory() as temp:
             assert not mutations, mutations
             assert settings.read_bytes() == original
             browser.close()
-            print('PASS: task selections, base compatibility, expert fallback, local persistence, update requests, advanced parameters; no backend mutations')
+            print('PASS: task selections, base compatibility, expert fallback, local persistence, update requests, Local/Cloud configuration and persistence; no backend mutations')
     finally:
         process.terminate()
         process.wait(timeout=10)
