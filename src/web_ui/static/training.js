@@ -11,7 +11,7 @@ window.AutoTenderTraining = (() => {
   const status = s => ({ready_for_training:'Data ready',blocked:'More examples needed',failed:'Failed',queued:'Queued',collecting:'Collecting sources',preparing:'Preparing dataset',collected:'Sources collected'}[s] || s);
   const date = v => v ? new Date(v).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
   const artifact = (j,n) => `/api/settings/jobs/${encodeURIComponent(j.id)}/artifacts/${encodeURIComponent(n)}`;
-  let host, state, timer, generation = 0, active='market_extraction', mode='simple', tab='datasets', selected={}, model, include=true, resultSignature='', openTender, settingsChanged;
+  let host, state, settings, timer, generation = 0, active='market_extraction', mode='simple', tab='configuration', selected={}, model, include=true, resultSignature='', openTender, settingsChanged;
   const preparing = new Set();
   const $ = id => host?.querySelector('#'+id);
   async function api(path, body) {
@@ -31,19 +31,20 @@ window.AutoTenderTraining = (() => {
   function render() {
     if(!host?.isConnected) return;
     host.dataset.mode=mode;
-    host.innerHTML=`<div class="tr-mode-tabs" aria-label="Training workspace">${[['simple','Training'],['advanced','Advanced']].map(([id,label])=>`<button data-mode="${id}" class="${mode===id?'selected':''}" aria-pressed="${mode===id}">${label}</button>`).join('')}</div>
-      ${mode==='advanced'?`<div class="tr-admin-heading"><b>Administration</b><span>Manage training data, model settings and preparation runs.</span></div><div class="tr-tabs" aria-label="Administration views">${[['datasets','Data preparation'],['sources','Sources'],['history','History']].map(([id,label])=>`<button data-tab="${id}" class="${tab===id?'selected':''}" aria-pressed="${tab===id}">${label}</button>`).join('')}</div>`:''}
+    host.innerHTML=`<div class="tr-mode-tabs" aria-label="LoRA workspace">${[['simple','LoRAs'],['advanced','Advanced']].map(([id,label])=>`<button data-mode="${id}" class="${mode===id?'selected':''}" aria-pressed="${mode===id}">${label}</button>`).join('')}</div>
+      ${mode==='advanced'?`<div class="tr-tabs" aria-label="Administration views">${[['configuration','Configuration'],['datasets','Data preparation'],['sources','Sources'],['history','History']].map(([id,label])=>`<button data-tab="${id}" class="${tab===id?'selected':''}" aria-pressed="${tab===id}">${label}</button>`).join('')}</div>`:''}
       <div id="tr-message" role="status" aria-live="polite" hidden></div><div id="tr-page"></div>`;
     host.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{capture();mode=b.dataset.mode;render();host.querySelector(`[data-mode="${mode}"]`).focus();});
     host.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{capture();tab=b.dataset.tab;render();host.querySelector(`[data-tab="${tab}"]`).focus();});
-    if(mode==='simple'||tab==='datasets')renderDataset();else if(tab==='sources')renderSources();else renderHistory();
+    if(mode==='simple'||tab==='configuration')TendifLoras.mount($('tr-page'),settings,state.evidence,mode==='advanced');
+    else if(tab==='datasets')renderDataset();else if(tab==='sources')renderSources();else renderHistory();
   }
   function evidence() {
     const data=state.evidence[active];
-    return mode==='simple'||include ? data : {examples:data.uploaded_examples, projects:data.uploaded_projects};
+    return include ? data : {examples:data.uploaded_examples, projects:data.uploaded_projects};
   }
   function renderDataset() {
-    const admin=mode==='advanced', task=tasks.find(t=>t.key===active), uploads=state.uploads.filter(u=>u.task===active);
+    const task=tasks.find(t=>t.key===active), uploads=state.uploads.filter(u=>u.task===active);
     const reusable=active==='market_extraction'?state.sources.length:active==='input_processing'?state.sponsor_records:0;
     $('tr-page').innerHTML=`<p class="tr-question" id="tr-task-label">What should Tendif improve?</p>
       <div class="tr-task-tabs" role="group" aria-labelledby="tr-task-label">${tasks.map(t=>`<button data-task="${t.key}" class="${t.key===active?'selected':''}" aria-pressed="${t.key===active}">${t.label}</button>`).join('')}</div>
@@ -52,18 +53,18 @@ window.AutoTenderTraining = (() => {
         <div class="tr-action"><button id="tr-prepare" class="primary">Prepare training data</button><button id="tr-add">${task.add}</button></div>
         <div id="tr-tender-picker" hidden></div>
         <div id="tr-result" aria-live="polite" hidden></div>
-        ${admin?`<section class="tr-options" id="tr-options"><h4>Preparation settings</h4>
+        <section class="tr-options" id="tr-options"><h4>Preparation settings</h4>
           <div class="tr-model-row"><label class="tr-field">Model ID<input id="tr-model" type="text" value="${escape(model)}" maxlength="200" spellcheck="false"></label><button id="tr-save-model">Save as default</button></div>
           ${task.source?`<label class="tr-source-choice"><input type="checkbox" id="tr-existing" ${include?'checked':''}><span>Include ${task.source} (${reusable})</span></label>`:''}
           <div class="tr-upload"><div><b>Import a prepared dataset</b><small>JSONL · <span id="tr-upload-count"></span> saved examples</small></div><button id="tr-upload-btn">Choose file</button></div>
           <input id="tr-file" type="file" accept=".jsonl" hidden><div id="tr-upload-status" role="status" class="tr-help"></div>
           <a class="tr-text-link" href="/api/settings/dataset-format" target="_blank" rel="noopener">File format &amp; examples ↗</a>
           ${uploads.filter(u=>u.error).map(u=>`<p class="err">${escape(u.file)}: ${escape(u.error)}</p>`).join('')}
-        </section>`:''}
+        </section>
       </section><p class="tr-connection">Training service not connected</p>
-      ${admin?`<details class="tr-provider"><summary>Connection settings</summary><p>Endpoint ${state.provider.endpoint_configured?'configured':'not configured'} · Credentials ${state.provider.credential_configured?'configured':'not configured'}. The cloud training API integration is pending.</p><p class="tr-help">Server configuration: <code>AUTOTENDER_TRAINING_ENDPOINT</code> and <code>AUTOTENDER_TRAINING_API_KEY</code>.</p></details>`:''}`;
+      <details class="tr-provider"><summary>Connection settings</summary><p>Endpoint ${state.provider.endpoint_configured?'configured':'not configured'} · Credentials ${state.provider.credential_configured?'configured':'not configured'}. The cloud training API integration is pending.</p><p class="tr-help">Server configuration: <code>AUTOTENDER_TRAINING_ENDPOINT</code> and <code>AUTOTENDER_TRAINING_API_KEY</code>.</p></details>`;
     host.querySelectorAll('[data-task]').forEach(b=>b.onclick=()=>{capture();active=b.dataset.task;renderDataset();host.querySelector(`[data-task="${active}"]`).focus();});
-    if(admin){$('tr-evidence').before($('tr-options'));$('tr-upload-btn').onclick=()=>$('tr-file').click();$('tr-file').onchange=upload;$('tr-save-model').onclick=saveModel;}
+    $('tr-evidence').before($('tr-options'));$('tr-upload-btn').onclick=()=>$('tr-file').click();$('tr-file').onchange=upload;$('tr-save-model').onclick=saveModel;
     $('tr-prepare').onclick=prepare;
     $('tr-add').onclick=addEvidence;
     if($('tr-existing'))$('tr-existing').onchange=()=>{capture();renderEvidence();};
@@ -77,9 +78,8 @@ window.AutoTenderTraining = (() => {
     $('tr-prepare').hidden=!data.examples&&!working;
     $('tr-prepare').disabled=working;
     $('tr-prepare').textContent=working?'Preparing…':'Prepare training data';
-    const fromTender=['win_ratio','productivity_factors'].includes(active);
-    $('tr-add').hidden=mode==='simple'&&!fromTender&&data.examples>0||mode==='advanced'&&active==='input_processing';
-    $('tr-add').textContent=mode==='simple'&&!fromTender?'Open Advanced':task.add;
+    $('tr-add').hidden=active==='input_processing';
+    $('tr-add').textContent=task.add;
     $('tr-add').classList.toggle('primary',!data.examples&&!working);
   }
   function addEvidence() {
@@ -95,8 +95,8 @@ window.AutoTenderTraining = (() => {
   }
   function renderResult() {
     if(!$('tr-result'))return;
-    const admin=mode==='advanced',j=currentJob(),expanded=!!selected[active]||j&&busy(j);
-    const signature=JSON.stringify([j||{},expanded,admin]);
+    const j=currentJob(),expanded=!!selected[active]||j&&busy(j);
+    const signature=JSON.stringify([j||{},expanded]);
     renderEvidence();
     if(signature===resultSignature)return;
     resultSignature=signature;
@@ -112,19 +112,17 @@ window.AutoTenderTraining = (() => {
     else if(m?.blockers.some(b=>b.includes('both outcome classes')))next.push('Add more won and lost tenders so both can be used for training.');
     box.innerHTML=`<div class="tr-result-head"><span>Preparation · ${date(j.created_at)}</span>${badge(j)}</div>
       ${busy(j)?'<div class="tr-progress" role="progressbar" aria-label="Dataset preparation in progress"></div>':''}
-      ${j.error?`<p class="err">${admin?escape(j.error):'Preparation could not finish. Open Advanced to review the details.'}</p>`:''}
+      ${j.error?`<p class="err">${escape(j.error)}</p>`:''}
       ${m?`<p><b>${total} example${total===1?'':'s'} accepted</b>${m.rejected_count?` · ${m.rejected_count} excluded`:''}</p>
         ${next.length?`<p class="tr-next">${next.map(escape).join(' ')}</p>`:''}
-        ${admin?`<div class="tr-result-actions">${j.status==='ready_for_training'&&j.artifacts.includes('dataset_bundle.zip')?`<a class="tr-button" href="${artifact(j,'dataset_bundle.zip')}" download>Download training data ↓</a>`:''}${total?'<button id="tr-preview-btn">Review examples</button>':''}</div><div id="tr-preview"></div>
+        <div class="tr-result-actions">${j.status==='ready_for_training'&&j.artifacts.includes('dataset_bundle.zip')?`<a class="tr-button" href="${artifact(j,'dataset_bundle.zip')}" download>Download training data ↓</a>`:''}${total?'<button id="tr-preview-btn">Review examples</button>':''}</div><div id="tr-preview"></div>
         <details class="tr-artifacts"><summary>Preparation details &amp; files</summary><p class="tr-help">${escape(j.base_model)} · ${m.project_count} tenders</p>
           <div class="tr-splits">${['train','validation','test'].map(s=>`<div><strong>${counts[s]||0}</strong><span>${s==='train'?'Training':s==='test'?'Test':'Validation'}</span></div>`).join('')}</div>
           ${m.blockers.length?`<ul>${m.blockers.map(b=>`<li>${escape(b)}</li>`).join('')}</ul>`:''}
           <div>${j.artifacts.map(n=>`<a href="${artifact(j,n)}" download>${escape(n)}</a>`).join('')}</div>
-        </details>`:''}`:''}
-      ${!admin&&(m||j.error)?'<button id="tr-advanced-result" class="tr-text-button">View preparation in Advanced ›</button>':''}
-      ${admin&&j.collection_errors?.length?`<details class="tr-note"><summary>${j.collection_errors.length} collection warnings</summary><pre>${escape(JSON.stringify(j.collection_errors,null,2))}</pre></details>`:''}`;
+        </details>`:''}
+      ${j.collection_errors?.length?`<details class="tr-note"><summary>${j.collection_errors.length} collection warnings</summary><pre>${escape(JSON.stringify(j.collection_errors,null,2))}</pre></details>`:''}`;
     if($('tr-preview-btn'))$('tr-preview-btn').onclick=()=>loadPreview(j,'train');
-    if($('tr-advanced-result'))$('tr-advanced-result').onclick=()=>{mode='advanced';tab='datasets';render();};
   }
   async function loadPreview(j,split) {
     try {
@@ -148,7 +146,7 @@ window.AutoTenderTraining = (() => {
   }
   async function prepare() {
     capture();const task=active,token=generation;preparing.add(task);renderEvidence();message('');
-    try{const data=await api('/api/training/prepare',{task,base_model:mode==='simple'?state.default_model:model,include_existing:mode==='simple'||include});selected[task]=data.job.id;if(token===generation)await refresh();}
+    try{const data=await api('/api/training/prepare',{task,base_model:model,include_existing:include});selected[task]=data.job.id;if(token===generation)await refresh();}
     catch(e){if(token===generation)message(e.message,true);}
     finally{preparing.delete(task);if(token===generation)renderEvidence();}
   }
@@ -184,7 +182,7 @@ window.AutoTenderTraining = (() => {
     $('tr-source-list').innerHTML=rows.map(s=>`<article><div><span class="tr-badge ${s.record_type==='market_award'?'good':''}">${s.record_type==='market_award'?'Award':'Tender'}</span><time>${escape(s.publication_date)}</time></div><b>${escape(s.title)}</b><p>${escape(s.buyer||'Buyer unspecified')}${s.canton?' · '+escape(s.canton):''}</p>${/^https:\/\/(www\.)?simap\.ch\//.test(s.url)?`<a href="${escape(s.url)}" target="_blank" rel="noopener">View on simap ↗</a>`:''}<details><summary>Source provenance</summary><p>Retrieved ${escape(s.retrieved_at||'See source artifact')}</p><code>${escape(s.sha256||'See source artifact')}</code></details></article>`).join('')||'<p>No publications match. Collect a source to get started.</p>';
   }
   function renderHistory() {
-    $('tr-page').innerHTML=`<section class="tr-card"><div class="tr-eyebrow">AUDIT TRAIL</div><h3>Collection & preparation runs</h3><p>Review previous collections and datasets.</p><div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>Run</th><th>Examples</th><th>Status</th><th>Created</th><th>Review</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td><b>${j.kind==='collection'?'Source collection':escape(tasks.find(t=>t.key===j.task)?.label||j.task)}</b></td><td>${j.manifest?.accepted_count??j.public_record_count??'—'}</td><td>${badge(j)}</td><td>${date(j.created_at)}</td><td><button data-run="${j.id}">View</button></td></tr>`).join('')||'<tr><td colspan="5">No preparations yet. Choose what to improve in Training.</td></tr>'}</tbody></table></div></section>`;
+    $('tr-page').innerHTML=`<section class="tr-card"><div class="tr-eyebrow">AUDIT TRAIL</div><h3>Collection & preparation runs</h3><p>Review previous collections and datasets.</p><div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>Run</th><th>Examples</th><th>Status</th><th>Created</th><th>Review</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td><b>${j.kind==='collection'?'Source collection':escape(tasks.find(t=>t.key===j.task)?.label||j.task)}</b></td><td>${j.manifest?.accepted_count??j.public_record_count??'—'}</td><td>${badge(j)}</td><td>${date(j.created_at)}</td><td><button data-run="${j.id}">View</button></td></tr>`).join('')||'<tr><td colspan="5">No preparations yet. Open Data preparation to get started.</td></tr>'}</tbody></table></div></section>`;
     host.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>{const j=state.jobs.find(j=>j.id===b.dataset.run);if(j.kind==='collection')tab='sources';else{active=j.task;selected[active]=j.id;tab='datasets';}render();});
   }
   async function refresh() {
@@ -193,7 +191,7 @@ window.AutoTenderTraining = (() => {
     if(token!==generation||!host?.isConnected)return;
     const sourceChanged=JSON.stringify(state?.sources)!==JSON.stringify(data.sources);
     state=data;
-    if(mode==='simple'||tab==='datasets')renderResult();
+    if(mode==='advanced'&&tab==='datasets')renderResult();
     if(mode==='advanced'&&tab==='sources') {renderCollection(state.jobs.find(j=>j.kind==='collection'));if(sourceChanged){capture();renderSources();}}
     if(mode==='advanced'&&tab==='history')renderHistory();
     clearTimeout(timer);
@@ -202,7 +200,7 @@ window.AutoTenderTraining = (() => {
   async function mount(element, navigate=openTender, changed=settingsChanged) {
     dispose();host=element;openTender=navigate;settingsChanged=changed;const token=generation;
     host.className='training';host.innerHTML='<div class="tr-card" role="status">Loading training workspace…</div>';
-    try {state=await api('/api/training');if(token!==generation||!host.isConnected)return;model??=state.default_model;render();if(state.jobs.some(busy))timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);}
+    try {const data=await Promise.all([api('/api/training'),api('/api/settings')]);if(token!==generation||!host.isConnected)return;[state,settings]=data;model??=state.default_model;render();if(state.jobs.some(busy))timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);}
     catch(e){if(token===generation&&host.isConnected){host.innerHTML='<div class="tr-card"><p role="alert"></p><button>Retry</button></div>';host.querySelector('p').textContent=e.message;host.querySelector('button').onclick=()=>mount(element);}}
   }
   function dispose(){generation++;clearTimeout(timer);}

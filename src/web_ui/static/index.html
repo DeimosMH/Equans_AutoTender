@@ -242,7 +242,7 @@
     </div>
     <button id="addBtn" style="width:100%">+ Add tender</button>
     <div class="nav-actions">
-      <button id="trainingBtn" class="navlink">LoRA training</button>
+      <button id="trainingBtn" class="navlink">LoRA settings</button>
       <button id="settingsBtn" class="navlink" aria-label="Settings" title="Settings"><span aria-hidden="true">&#9881;</span></button>
     </div>
   </div>
@@ -309,6 +309,7 @@
   </div>
 </main>
 
+<script src="/static/lora-settings.js"></script>
 <script src="/static/training.js"></script>
 <script src="/static/learning.js"></script>
 <script>
@@ -478,8 +479,8 @@ function openTraining() {
 function renderTraining() {
   ["emptywrap", "welcome", "saveBtn", "dlwrap", "dlMenu", "renameBtn", "dirtyBadge", "reviewBadge", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
   $("content").classList.remove("hidden");
-  $("tenderTitle").textContent = "LoRA training";
-  $("sub").textContent = "Improve Tendif with your tender history";
+  $("tenderTitle").textContent = "LoRA settings";
+  $("sub").textContent = "Choose and update the models for each task";
   $("content").innerHTML = '<div id="trainingWorkspace"></div>';
   AutoTenderTraining.mount($("trainingWorkspace"), async (tender, task) => {
     view="tender";location.hash="";

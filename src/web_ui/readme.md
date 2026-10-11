@@ -75,21 +75,38 @@ removes the directory and its current outcome/productivity training exports.
 | `GET /api/tenders/<id>/pdf?format=pdf\|html\|docx&margin&overhead&waste` | export the offer (`&inline=1` previews HTML in the tab) |
 | `DELETE /api/tenders/<id>` | delete tender |
 
-## LoRA training
+## LoRA settings
 
-Open **LoRA training** in the sidebar, or `/#training`. Two tabs separate everyday
-use from administration:
+Open **LoRA settings** in the sidebar, or `/#training`. The **LoRAs** tab follows
+the three tasks in `todo`: input processing, productivity factors and success
+probability. It has three simple menus:
 
-- **Training**: choose what to improve, see the available evidence, and prepare
-  training data. Saved evidence and the configured default model are included
-  automatically. **Add tender results** and **Add measurements** open the chosen
-  tender's finalised form. Empty states explain the next action without technical
-  controls, dataset splits or file formats.
-- **Advanced**: **Data preparation** contains the model ID, **Save as default**,
+- **Select LoRAs**: choose a version for each task. Each option shows its base
+  model, which is selected automatically with the LoRA. Expert productivity
+  values remain an explicit option, with a link to edit them.
+- **Update LoRAs**: select a task, use internal training data and/or add data links,
+  then save an update request. A task without a selected version offers Create LoRA.
+- **Base models**: choose a base LLM independently for each task. Changing a base
+  clears an incompatible LoRA without affecting the other tasks.
+
+These are interactive **UI previews**, as requested while the backend is pending.
+Choices, paths, parameters and the latest update request per task persist in this
+browser's `tendif_lora_preferences_v1` localStorage entry. Existing version metadata
+comes from `/api/settings`; selecting it does not certify, activate or retrain an
+adapter. Update requests capture the selected version/base, source choices, links,
+data directory and parameters. They are not submitted to a remote queue. The saved
+example count comes from Tendif's current inventory; custom directories are not scanned.
+
+**Advanced** contains:
+
+- **Configuration**: model/LoRA/data/cache directories and per-task rank, alpha,
+  dropout, epochs and learning rate. These also belong to the local UI preview.
+- **Data preparation**: the working dataset tools, with model ID, **Save as default**,
   existing-source selection, validated JSONL imports, example previews, split
-  counts and downloadable bundles. **Sources** imports simap projects or searches
-  historical ventilation awards. **History** reopens previous preparations and
-  collections. Connection details are collapsed under Data preparation.
+  counts and downloadable bundles. Tender results and measurements can be opened
+  from here. Connection details are collapsed.
+- **Sources**: import simap projects or search historical ventilation awards.
+- **History**: reopen previous preparations and collections.
 
 Fresh settings default to `glm-5.3-flash`; existing model settings are preserved.
 An Advanced model override applies to that preparation unless saved as default.
@@ -105,8 +122,8 @@ See [unified context](../../PROJECT_CONTEXT.md) for boundaries and API contracts
 
 Settings retains editable productivity factors and appearance. Monitoring and
 candidate evaluation are under a disclosure. The target model for a new dataset
-is configured in **LoRA training → Advanced**. Legacy model/path settings remain stored but
-are no longer shown as controls.
+is configured in **LoRA settings → Advanced → Data preparation**. Preview choices
+are separate from these working preparation settings and calculator factors.
 AI productivity factors are demo values until a trained adapter is integrated.
 Manual and demo factors both remain editable and feed the calculator.
 
@@ -180,6 +197,7 @@ See [recursive improvement documentation](../_4_RecursiveImprovement/readme.md).
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 # With Playwright, Chromium and PyYAML installed in the test environment:
 python3 tests/browser_training.py
+python3 tests/browser_lora_settings.py
 python3 tests/browser_feedback.py
 ```
 
@@ -187,6 +205,10 @@ The browser check uses temporary storage and covers preparation, previews,
 downloads, uploads, navigation, tender editing, finalisation/reopening, persisted
 outcome corrections, evidence documents, safe rendering of CSV text, dark mode
 and responsive layouts.
+
+The LoRA settings browser check covers model/version compatibility, per-task
+choices, manual fallback, request contents, paths and parameter persistence. It
+asserts that the preview sends no writes to the backend and preserves server settings.
 
 The feedback browser check also covers bound candidate imports, rejection of invalid
 responses, persisted review results, downloads and light/dark/mobile layouts.

@@ -1071,7 +1071,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/":
                 self._send(200, INDEX.read_bytes(), "text/html; charset=utf-8")
-            elif url.path in ('/static/training.js', '/static/training.css', '/static/workspace.css', '/static/learning.js'):
+            elif url.path in ('/static/training.js', '/static/training.css', '/static/workspace.css', '/static/learning.js', '/static/lora-settings.js'):
                 asset = BASE / 'static' / parts[-1]
                 self._send(200, asset.read_bytes(), 'text/javascript; charset=utf-8' if asset.suffix == '.js' else 'text/css; charset=utf-8')
             elif url.path == '/api/training':

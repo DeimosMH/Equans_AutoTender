@@ -8,3 +8,8 @@
 a. input processing
 b. productivity factors (it is currently set manually by experts - via intuition and/or experience)
 c. succes (to ratio) possibility calculation
+
+UI implemented under LoRA settings: Select LoRAs / Update LoRAs / Base models.
+Each task has its own compatible base model and LoRA selection. Paths and LoRA
+parameters are in Advanced. Selection/update requests are browser-local previews;
+backend registry, activation and training API integration are pending.

@@ -15,11 +15,13 @@ submit offers automatically. `materials/README.md` defines the challenge and
 
 The user rejected a previous UI for bloat, inconsistent styling and layout bugs.
 Preserve the existing tender editor, orange/neutral theme, editable table and
-pricing controls. LoRA work has its own sidebar destination with two tabs:
-**Training** is deliberately simple: choose an improvement, see available evidence,
-prepare data, or open a tender to add results/measurements. **Advanced** holds all
-model/source/import controls, connection details, example previews, dataset splits
-and files, with Data preparation / Sources / History subviews. This is a UI split,
+pricing controls. **LoRA settings** has two tabs. **LoRAs** follows the original
+`src/web_ui/todo`: Select LoRAs / Update LoRAs / Base models, each for input
+processing, productivity factors and success probability. Selecting a version
+also chooses its base model; changing a task's base clears an incompatible LoRA.
+Manual expert productivity remains an explicit fallback. **Advanced** contains
+Configuration (paths and per-task LoRA parameters), Data preparation, Sources
+and History. Public-notice extraction remains an admin dataset task. This is a UI split,
 not an authentication boundary; the server remains localhost-only with no auth.
 Settings contains productivity and
 appearance; diagnostic monitoring and candidate evaluation are collapsed.
@@ -34,9 +36,21 @@ links and controls readable in both themes; there are no default blue links.
 The requested base model is **GLM-5.3-Flash**. Default preparation ID:
 `glm-5.3-flash`; the provider may use another ID, so custom IDs are accepted and
 captured in each preparation run. Existing settings and old runs are retained.
-Training always uses saved evidence and the configured default model. Advanced
-allows a per-run override and an explicit **Save as default** action; it does not
-silently replace an existing model setting.
+Advanced → Data preparation allows a per-run override and an explicit
+**Save as default** action; it does not silently replace an existing model setting.
+
+The latest user explicitly requested the resulting selection/update UI before
+backend integration. `static/lora-settings.js` therefore stores preview choices
+in browser localStorage (`tendif_lora_preferences_v1`), separately from live
+calculator factors, server settings and preparation jobs. Version metadata is
+read from settings; no metadata is promoted to a verified or active adapter.
+The latest request per task captures base/version, internal-data selection,
+links, data directory and proposed LoRA parameters with a timestamp. The UI
+validates link syntax but does not fetch links, scan custom directories, queue
+remote jobs or fabricate trained versions. Saved example counts reflect the
+existing Tendif inventory. Connect the UI to a validated model registry and
+activation/update API when the cloud contract is supplied; preserve per-task
+base/version compatibility and keep activation separate from preparation.
 The user confirms the model/training service will run in **Docker in the cloud**.
 Its endpoint and training API contract have not been provided. Remote upload,
 training, job polling and adapter serving are therefore pending integrations.
@@ -59,7 +73,8 @@ Preparation and review work now; no successful training is implied.
   monitoring and persisted candidate evaluation handoffs/results. Verified exports enter the corresponding `_3` uploads. No automatic
   model activation. See its readme for detailed payloads.
 - `web_ui`: localhost stdlib HTTP server and dependency-free HTML/CSS/JS. Training
-  code is `static/training.js` / `static/training.css`; tender/settings logic stays
+  admin preparation code is `static/training.js` / `static/training.css`;
+  `static/lora-settings.js` owns the task-based UI preview. Tender/settings logic stays
   in `static/index.html`; `static/learning.js` handles the collapsed review workspace.
   `static/workspace.css` contains shared accessibility and
   completed-tender styles. No frontend build step.
@@ -312,6 +327,7 @@ python3 src/_3_Prediction/validate.py
 python3 src/_2_Calculator/validate.py
 # Optional browser environment: playwright + Chromium + PyYAML
 python3 src/web_ui/tests/browser_training.py
+python3 src/web_ui/tests/browser_lora_settings.py
 python3 src/web_ui/tests/browser_feedback.py
 ```
 
@@ -358,3 +374,11 @@ finalised tender's measurement form. A separate axe/layout check passes all 18
 combinations of six training states (empty, ready, more evidence, admin details,
 sources and history) in light, dark and 390px mobile layouts. The backend and
 browser tests use temporary storage; existing tenders and settings are preserved.
+
+The subsequent task-based LoRA UI review passes `browser_lora_settings.py` and
+the updated `browser_training.py`. The new test checks per-task compatibility,
+selection persistence, expert fallback, update/create request contents and advanced
+configuration, and asserts that no backend writes occur from the preview. All 12
+axe/layout combinations of Select LoRAs, Base models, Update LoRAs and Configuration
+in light/dark/390px mobile layouts pass. Existing dataset preparation and tender
+editing/finalisation/download workflows still pass with their new Advanced navigation.
