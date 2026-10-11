@@ -70,7 +70,27 @@ with tempfile.TemporaryDirectory() as temp:
             page.get_by_role('button', name='Update LoRAs', exact=True).click()
             page.locator('#lm-internal').uncheck()
             page.get_by_role('button', name='Update LoRA', exact=True).click()
-            expect(page.locator('#lm-message')).to_contain_text('Choose internal training data or add a link')
+            expect(page.locator('#lm-message')).to_contain_text('Choose internal training data, upload files or add a link')
+            with page.expect_file_chooser() as picker:
+                page.get_by_role('button', name='Upload data', exact=True).click()
+            picker.value.set_files([
+                {'name': 'positions.csv', 'mimeType': 'text/csv', 'buffer': b'quantity\n10\n'},
+                {'name': 'tender-notes.txt', 'mimeType': 'text/plain', 'buffer': b'Reviewed input'},
+            ])
+            expect(page.locator('#lm-file-count')).to_have_text('2 files selected')
+            page.get_by_role('button', name='Remove tender-notes.txt', exact=True).click()
+            expect(page.locator('#lm-file-count')).to_have_text('1 file selected')
+            page.get_by_role('button', name='Productivity factors', exact=True).click()
+            expect(page.locator('#lm-file-count')).to_have_text('No files selected')
+            page.get_by_role('button', name='Input processing', exact=True).click()
+            expect(page.locator('#lm-file-list')).to_contain_text('positions.csv')
+            # Files alone are a valid source, with no internal data or links.
+            page.get_by_role('button', name='Update LoRA', exact=True).click()
+            saved = page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1"))')
+            upload_request = saved['requests']['input_processing']
+            assert not upload_request['include_internal'] and not upload_request['links']
+            assert upload_request['files'][0]['name'] == 'positions.csv'
+            assert upload_request['files'][0]['size'] == len(b'quantity\n10\n')
             page.locator('#lm-links').fill('javascript:alert(1)')
             page.get_by_role('button', name='Update LoRA', exact=True).click()
             assert not page.locator('#lm-links').evaluate('e=>e.validity.valid')
@@ -95,6 +115,8 @@ with tempfile.TemporaryDirectory() as temp:
             page.get_by_role('button', name='Update LoRAs', exact=True).click()
             expect(page.locator('#lm-links')).to_have_value('https://www.simap.ch/de/project-detail/example\nhttps://example.org/reviewed-data')
             expect(page.locator('#lm-request')).to_contain_text('Update request saved')
+            expect(page.locator('#lm-file-list')).to_be_empty()
+            expect(page.locator('#lm-file-reminder')).to_be_visible()
             page.get_by_role('button', name='Select LoRAs', exact=True).click()
             page.get_by_role('link', name='Edit expert productivity values', exact=False).click()
             expect(page.locator('#pfRows')).to_be_visible()

@@ -90,6 +90,12 @@ body.dark .training { --tr-green:#9cd9bf; --tr-green-bg:#243b31; }
 .lm-footer a,.lm-footer span { font-size:12px; }
 .lm-footer span { color:var(--muted); }
 .lm-links { margin-top:20px; }
+.lm-upload { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:18px; }
+.lm-upload span,.lm-file small { font-size:12px; color:var(--muted); }
+.lm-file { display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); font-size:12px; }
+.lm-file > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.lm-file small,.lm-file button { flex-shrink:0; }
+.lm-file button { padding:3px 9px; }
 .lm-links > span { color:var(--muted); }
 .lm-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
 .lm-parameters { border-top:1px solid var(--line); margin-top:24px; padding-top:20px; }

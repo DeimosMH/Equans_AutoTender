@@ -7,6 +7,7 @@ window.TendifLoras = (() => {
     {key:'win_ratio',label:'Success probability',description:'Estimate the chance of winning a tender.',fallback:'Current calculation'},
   ];
   const parameters={rank:16,alpha:32,dropout:0.05,epochs:3,learning_rate:0.0002};
+  const files={}; // File objects stay in this session; saved requests retain their metadata only.
   const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const versionKey=v=>JSON.stringify([v.base,v.version,v.adapter_id||'']);
   const modelName=id=>id==='glm-5.3-flash'?'GLM 5.3 Flash':id;
@@ -81,25 +82,46 @@ window.TendifLoras = (() => {
     $('lm-panel').innerHTML=`${taskTabs()}<form id="lm-update" class="tr-card lm-card"><h3>${version?'Update':'Create'} ${t.label.toLowerCase()} LoRA</h3>
       <p>${version?escape(version.version):'New LoRA'} · ${escape(modelName(choice.base_model))}</p>
       <label class="tr-source-choice"><input type="checkbox" id="lm-internal" ${choice.include_internal?'checked':''}><span><b>Use internal training data</b><small>${evidence[task]?.examples||0} saved examples</small></span></label>
+      <div class="lm-upload"><button type="button" id="lm-upload">Upload data</button><span id="lm-file-count"></span></div>
+      <input type="file" id="lm-files" multiple hidden><div id="lm-file-list" aria-live="polite"></div>
+      <p class="tr-help" id="lm-file-reminder" hidden>Files from the previous request need to be selected again after reloading.</p>
       <label class="tr-field lm-links">Additional data links <span>(optional · one per line)</span><textarea id="lm-links" rows="3" maxlength="4000" placeholder="https://…">${escape(choice.links)}</textarea></label>
       <div class="lm-footer"><button class="primary">${version?'Update LoRA':'Create LoRA'}</button><span>Training service not connected</span></div>
       <p id="lm-request" class="tr-help" ${prefs.requests[task]?'':'hidden'}>${prefs.requests[task]?'Update request saved · '+escape(new Date(prefs.requests[task].saved_at).toLocaleString()):''}</p>
     </form>`;
     $('lm-internal').onchange=e=>{choice.include_internal=e.target.checked;};
+    $('lm-upload').onclick=()=>$('lm-files').click();
+    $('lm-files').onchange=e=>{
+      files[task]??=[];
+      for(const file of e.target.files){
+        if(!files[task].some(f=>f.name===file.name&&f.size===file.size&&f.lastModified===file.lastModified))files[task].push(file);
+      }
+      e.target.value='';renderFiles();
+    };
+    renderFiles();
     $('lm-links').oninput=e=>{choice.links=e.target.value;e.target.setCustomValidity('');};
     $('lm-update').onsubmit=e=>{
       e.preventDefault();const links=choice.links.split('\n').map(s=>s.trim()).filter(Boolean);
       if(links.some(link=>{try{return !['https:','http:'].includes(new URL(link).protocol);}catch{return true;}})){
         $('lm-links').setCustomValidity('Use complete http:// or https:// links, one per line.');$('lm-links').reportValidity();return;
       }
-      if(!choice.include_internal&&!links.length){message('Choose internal training data or add a link.',true);return;}
+      if(!choice.include_internal&&!links.length&&!files[task]?.length){message('Choose internal training data, upload files or add a link.',true);return;}
       prefs.requests[task]={task,base_model:choice.base_model,adapter:version?{version:version.version,base:version.base,adapter_id:version.adapter_id}:null,
         include_internal:choice.include_internal,links,data_dir:prefs.advanced.data_dir,
+        files:(files[task]||[]).map(f=>({name:f.name,size:f.size,type:f.type,last_modified:f.lastModified})),
         parameters:{...choice.parameters},saved_at:new Date().toISOString()};
       if(save('Update request saved. Waiting for the training service.')){
         $('lm-request').hidden=false;$('lm-request').textContent='Update request saved · '+new Date(prefs.requests[task].saved_at).toLocaleString();
+        renderFiles();
       }
     };
+  }
+  function renderFiles() {
+    const selected=files[task]||[];
+    $('lm-file-count').textContent=selected.length?`${selected.length} file${selected.length===1?'':'s'} selected`:'No files selected';
+    $('lm-file-list').innerHTML=selected.map((f,i)=>`<div class="lm-file"><span>${escape(f.name)}</span><small>${f.size<1024?f.size+' B':f.size<1048576?(f.size/1024).toFixed(1)+' KB':(f.size/1048576).toFixed(1)+' MB'}</small><button type="button" data-lm-remove="${i}" aria-label="Remove ${escape(f.name)}">×</button></div>`).join('');
+    $('lm-file-reminder').hidden=!!selected.length||!prefs.requests[task]?.files?.length;
+    host.querySelectorAll('[data-lm-remove]').forEach(button=>button.onclick=()=>{files[task].splice(Number(button.dataset.lmRemove),1);renderFiles();$('lm-upload').focus();});
   }
   function renderAdvanced() {
     $('lm-panel').innerHTML=`<form id="lm-advanced" class="tr-card lm-card"><h3>Paths &amp; LoRA parameters</h3>

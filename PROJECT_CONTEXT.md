@@ -46,6 +46,10 @@ calculator factors, server settings and preparation jobs. Version metadata is
 read from settings; no metadata is promoted to a verified or active adapter.
 The latest request per task captures base/version, internal-data selection,
 links, data directory and proposed LoRA parameters with a timestamp. The UI
+also offers **Upload data** for every task, with multiple files, sizes and removal.
+File objects stay separate per task for the current session; only their metadata
+is retained in saved requests. After reloading, the UI asks for files to be selected
+again. Uploading file contents awaits the backend. The UI
 validates link syntax but does not fetch links, scan custom directories, queue
 remote jobs or fabricate trained versions. Saved example counts reflect the
 existing Tendif inventory. Connect the UI to a validated model registry and

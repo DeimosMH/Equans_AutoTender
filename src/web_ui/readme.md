@@ -84,8 +84,10 @@ probability. It has three simple menus:
 - **Select LoRAs**: choose a version for each task. Each option shows its base
   model, which is selected automatically with the LoRA. Expert productivity
   values remain an explicit option, with a link to edit them.
-- **Update LoRAs**: select a task, use internal training data and/or add data links,
-  then save an update request. A task without a selected version offers Create LoRA.
+- **Update LoRAs**: select a task, use internal training data, **Upload data** from
+  local files and/or add data links, then save an update request. Files show their
+  names and sizes and can be removed individually. A task without a selected
+  version offers Create LoRA.
 - **Base models**: choose a base LLM independently for each task. Changing a base
   clears an incompatible LoRA without affecting the other tasks.
 
@@ -94,7 +96,10 @@ Choices, paths, parameters and the latest update request per task persist in thi
 browser's `tendif_lora_preferences_v1` localStorage entry. Existing version metadata
 comes from `/api/settings`; selecting it does not certify, activate or retrain an
 adapter. Update requests capture the selected version/base, source choices, links,
-data directory and parameters. They are not submitted to a remote queue. The saved
+data directory, selected-file metadata and parameters. File objects stay in the
+current browser session; after reloading, a reminder asks for the files again.
+File contents are not uploaded or stored in localStorage. Requests are not submitted
+to a remote queue. The saved
 example count comes from Tendif's current inventory; custom directories are not scanned.
 
 **Advanced** contains:
