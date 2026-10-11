@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory() as temp:
             page.on('request', lambda request: mutations.append(request.url) if request.method != 'GET' else None)
             page.goto(url+'/#training')
             expect(page.locator('[data-lm-select]')).to_have_count(3)
+            expect(page).to_have_url(url+'/#lora-settings/loras/select')
             expect(page.locator('[data-lm-path], [data-lm-parameter], #tr-model')).to_have_count(0)
             page.locator('#lm-input_processing').select_option(label='Tender reader v2 · GLM 5.3 Flash')
             page.locator('#lm-productivity_factors').select_option(label='Site measurements v1 · GLM-4.6')
@@ -90,8 +91,18 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#lm-file-count')).to_have_text('1 file selected')
             page.get_by_role('button', name='Productivity factors', exact=True).click()
             expect(page.locator('#lm-file-count')).to_have_text('No files selected')
-            page.get_by_role('button', name='Input processing', exact=True).click()
+            expect(page).to_have_url(url+'/#lora-settings/loras/update/productivity-factors')
+            page.go_back()
+            expect(page).to_have_url(url+'/#lora-settings/loras/update/input-processing')
+            expect(page.get_by_role('button', name='Input processing', exact=True)).to_have_attribute('aria-pressed', 'true')
             expect(page.locator('#lm-file-list')).to_contain_text('positions.csv')
+            page.go_forward()
+            expect(page.get_by_role('button', name='Productivity factors', exact=True)).to_have_attribute('aria-pressed', 'true')
+            page.get_by_role('button', name='Input processing', exact=True).click()
+            # Clicking an already selected tab must not add duplicate history entries.
+            history_length = page.evaluate('history.length')
+            page.get_by_role('button', name='Input processing', exact=True).click()
+            assert page.evaluate('history.length') == history_length
             # Files alone are a valid source, with no internal data or links.
             page.get_by_role('button', name='Update LoRA', exact=True).click()
             saved = page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1"))')
@@ -122,7 +133,9 @@ with tempfile.TemporaryDirectory() as temp:
             assert saved['requests']['productivity_factors']['adapter'] is None
             assert saved['requests']['productivity_factors']['parameters']['rank'] == 16
             page.reload()
-            page.get_by_role('button', name='Update LoRAs', exact=True).click()
+            expect(page.get_by_role('button', name='Update LoRAs', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(page.get_by_role('button', name='Productivity factors', exact=True)).to_have_attribute('aria-pressed', 'true')
+            page.get_by_role('button', name='Input processing', exact=True).click()
             expect(page.locator('#lm-links')).to_have_value('https://www.simap.ch/de/project-detail/example\nhttps://example.org/reviewed-data')
             expect(page.locator('#lm-request')).to_contain_text('Update request saved')
             expect(page.locator('#lm-file-list')).to_be_empty()
@@ -171,11 +184,65 @@ with tempfile.TemporaryDirectory() as temp:
             page.get_by_role('button', name='Select LoRAs', exact=True).click()
             page.get_by_role('link', name='Edit expert productivity values', exact=False).click()
             expect(page.locator('#pfRows')).to_be_visible()
+            expect(page).to_have_url(url+'/#settings')
+            page.go_back()
+            expect(page.get_by_role('button', name='Select LoRAs', exact=True)).to_have_attribute('aria-pressed', 'true')
+            page.go_forward()
+            expect(page.locator('#pfRows')).to_be_visible()
+            # Shared links restore every menu, including its task, in a fresh browser context.
+            shared = browser.new_page()
+            shared.on('pageerror', lambda error: errors.append(str(error)))
+            shared.on('request', lambda request: mutations.append(request.url) if request.method != 'GET' else None)
+            routes = [
+                ('loras/select', ['LoRAs', 'Select LoRAs']),
+                ('loras/base-models', ['LoRAs', 'Base models']),
+                ('advanced/sources', ['Advanced', 'Sources']),
+                ('advanced/history', ['Advanced', 'History']),
+                ('advanced/evaluation', ['Advanced', 'Evaluation']),
+            ]
+            for task, label in [('input-processing', 'Input processing'), ('productivity-factors', 'Productivity factors'), ('win-ratio', 'Success probability')]:
+                routes.extend([
+                    (f'loras/update/{task}', ['LoRAs', 'Update LoRAs', label]),
+                    (f'advanced/configuration/{task}', ['Advanced', 'Configuration', label]),
+                ])
+            for task, label in [('market-extraction', 'Public notices'), ('input-processing', 'Tender matching'), ('win-ratio', 'Bid outcomes'), ('productivity-factors', 'Productivity')]:
+                routes.append((f'advanced/data-preparation/{task}', ['Advanced', 'Data preparation', label]))
+            for path, buttons in routes:
+                shared.goto(url+'/#lora-settings/'+path)
+                for button in buttons:
+                    expect(shared.get_by_role('button', name=button, exact=True)).to_have_attribute('aria-pressed', 'true')
+                shared.reload()
+                for button in buttons:
+                    expect(shared.get_by_role('button', name=button, exact=True)).to_have_attribute('aria-pressed', 'true')
+                expect(shared).to_have_url(url+'/#lora-settings/'+path)
+            # Partial and invalid paths fall back to a valid, canonical view.
+            for path, canonical in [
+                ('training', 'loras/select'),
+                ('lora-settings/advanced/configuration', 'advanced/configuration/input-processing'),
+                ('lora-settings/advanced/unknown/invalid', 'advanced/configuration/input-processing'),
+                ('lora-settings/advanced/data-preparation/invalid', 'advanced/data-preparation/market-extraction'),
+                ('lora-settings/loras/update/invalid', 'loras/update/input-processing'),
+                ('lora-settings/unknown/%3Cscript%3E', 'loras/select'),
+            ]:
+                shared.evaluate('(hash)=>{location.hash=hash}', path)
+                expect(shared).to_have_url(url+'/#lora-settings/'+canonical)
+            # Navigating before the initial tender list arrives must still open the chosen route.
+            delayed = []
+            shared.route('**/api/tenders', lambda route: delayed.append(route))
+            shared.goto(url+'/')
+            shared.locator('#trainingBtn').click()
+            shared.get_by_role('button', name='Advanced', exact=True).click()
+            shared.get_by_role('button', name='Productivity factors', exact=True).click()
+            delayed[0].continue_()
+            shared.wait_for_load_state('networkidle')
+            expect(shared).to_have_url(url+'/#lora-settings/advanced/configuration/productivity-factors')
+            expect(shared.get_by_role('button', name='Productivity factors', exact=True)).to_have_attribute('aria-pressed', 'true')
+            shared.close()
             assert not errors, errors
             assert not mutations, mutations
             assert settings.read_bytes() == original
             browser.close()
-            print('PASS: task selections, base compatibility, expert fallback, local persistence, update requests, Local/Cloud configuration and persistence; no backend mutations')
+            print('PASS: task selections, base compatibility, expert fallback, local persistence, update requests, Local/Cloud configuration, shared tab links, reload, Back/Forward and invalid routes; no backend mutations')
     finally:
         process.terminate()
         process.wait(timeout=10)

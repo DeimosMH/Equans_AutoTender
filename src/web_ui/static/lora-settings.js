@@ -11,7 +11,7 @@ window.TendifLoras = (() => {
   const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const versionKey=v=>JSON.stringify([v.base,v.version,v.adapter_id||'']);
   const modelName=id=>id==='glm-5.3-flash'?'GLM 5.3 Flash':id;
-  let host,settings,evidence,prefs,view='select',task='input_processing',advanced=false;
+  let host,settings,evidence,prefs,view='select',task='input_processing',advanced=false,navigationChanged;
   const $=id=>host.querySelector('#'+id);
   const versions=key=>settings.tasks[key]?.versions||[];
   const chosen=key=>versions(key).find(v=>versionKey(v)===prefs.tasks[key].selected);
@@ -50,8 +50,13 @@ window.TendifLoras = (() => {
     try{localStorage.setItem(storageKey,JSON.stringify(prefs));message(text);return true;}
     catch{message('Could not save. Allow browser storage and try again.',true);return false;}
   }
-  function mount(element,options,inventory,isAdvanced=false) {
-    host=element;settings=options;evidence=inventory;advanced=isAdvanced;prefs??=load();render();
+  function getRoute() {return {view,task};}
+  function setRoute(nextView,nextTask) {
+    view=['select','update','base'].includes(nextView)?nextView:'select';
+    task=tasks.some(t=>t.key===nextTask)?nextTask:'input_processing';
+  }
+  function mount(element,options,inventory,isAdvanced=false,onNavigate=()=>{}) {
+    host=element;settings=options;evidence=inventory;advanced=isAdvanced;navigationChanged=onNavigate;prefs??=load();render();
   }
   function taskTabs() {
     return `<div class="tr-task-tabs" role="group" aria-label="LoRA task">${tasks.map(t=>`<button type="button" data-lm-task="${t.key}" class="${task===t.key?'selected':''}" aria-pressed="${task===t.key}">${t.label}</button>`).join('')}</div>`;
@@ -60,9 +65,9 @@ window.TendifLoras = (() => {
     host.innerHTML=`${advanced?'':`<div class="tr-tabs lm-menu" aria-label="LoRA settings">${[['select','Select LoRAs'],['update','Update LoRAs'],['base','Base models']].map(([id,label])=>`<button data-lm-view="${id}" class="${view===id?'selected':''}" aria-pressed="${view===id}">${label}</button>`).join('')}</div>`}
       <p class="lm-preview">UI preview · choices saved in this browser</p>
       <div id="lm-message" role="status" aria-live="polite" hidden></div><div id="lm-panel"></div>`;
-    host.querySelectorAll('[data-lm-view]').forEach(b=>b.onclick=()=>{view=b.dataset.lmView;render();host.querySelector(`[data-lm-view="${view}"]`).focus();});
+    host.querySelectorAll('[data-lm-view]').forEach(b=>b.onclick=()=>{view=b.dataset.lmView;render();navigationChanged();host.querySelector(`[data-lm-view="${view}"]`).focus();});
     if(advanced)renderAdvanced();else if(view==='update')renderUpdate();else renderSelection();
-    host.querySelectorAll('[data-lm-task]').forEach(b=>b.onclick=()=>{task=b.dataset.lmTask;render();host.querySelector(`[data-lm-task="${task}"]`).focus();});
+    host.querySelectorAll('[data-lm-task]').forEach(b=>b.onclick=()=>{task=b.dataset.lmTask;render();navigationChanged();host.querySelector(`[data-lm-task="${task}"]`).focus();});
   }
   function renderSelection() {
     const baseView=view==='base';
@@ -155,5 +160,5 @@ window.TendifLoras = (() => {
     host.querySelectorAll('[data-lm-parameter]').forEach(input=>input.oninput=()=>{if(input.validity.valid)prefs.tasks[task].parameters[input.dataset.lmParameter]=Number(input.value);});
     $('lm-advanced').onsubmit=e=>{e.preventDefault();save('Configuration saved in this browser.');};
   }
-  return {mount};
+  return {mount,getRoute,setRoute};
 })();

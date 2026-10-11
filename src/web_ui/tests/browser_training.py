@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.get_by_role('button',name='Advanced',exact=True)).to_be_focused()
             page.get_by_role('button',name='Data preparation',exact=True).click()
             page.get_by_role('button',name='Productivity',exact=True).click()
+            expect(page).to_have_url(address+'/#lora-settings/advanced/data-preparation/productivity-factors')
             expect(page.get_by_role('button',name='Productivity',exact=True)).to_be_focused()
             expect(page.locator('#tr-evidence')).to_contain_text('No measurements yet')
             expect(page.locator('#tr-prepare')).to_be_hidden()
@@ -94,6 +95,7 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('.tr-table tbody tr')).to_have_count(3)
             page.locator('[data-run]').last.click()
             expect(page.locator('#tr-result')).to_contain_text('Data ready')
+            expect(page).to_have_url(address+'/#lora-settings/advanced/data-preparation/market-extraction')
             # Existing calculator workflow and unsaved drafts survive visiting training.
             page.locator('#addBtn').click();page.locator('#tenderName').fill('Browser review')
             page.locator('#createBtn').click()
@@ -108,7 +110,15 @@ with tempfile.TemporaryDirectory() as temp:
             quantity=page.locator('#posTable input[data-f="quantity"]').first
             quantity.fill('7')
             page.locator('#trainingBtn').click()
+            training_url=page.url
+            page.go_back()
+            expect(page.locator('#posTable input[data-f="quantity"]').first).to_have_value('7')
+            expect(page).to_have_url(address+'/')
+            page.go_forward()
+            expect(page.locator('#tr-model')).to_be_visible()
+            expect(page).to_have_url(training_url)
             page.locator('#tenderList .tname').click()
+            expect(page).to_have_url(address+'/')
             expect(page.locator('#posTable input[data-f="quantity"]').first).to_have_value('7')
             expect(page.locator('#saveBtn')).to_be_enabled()
             page.locator('#overhead').fill('12')

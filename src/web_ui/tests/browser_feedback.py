@@ -47,6 +47,7 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('[data-prepare]')).to_have_count(0)
             page.get_by_role('button',name='Advanced',exact=True).click()
             page.get_by_role('button',name='Evaluation',exact=True).click()
+            expect(page).to_have_url(address+'/#lora-settings/advanced/evaluation')
             expect(page.locator('[data-metrics]')).to_contain_text('10')
             page.get_by_role('button',name='Prepare review',exact=True).click()
             expect(page.locator('[data-message]')).to_contain_text('Bundle ready.')
@@ -70,8 +71,8 @@ with tempfile.TemporaryDirectory() as temp:
                 page.get_by_role('link',name='Download review',exact=False).click()
             assert json.loads(Path(result_download.value.path()).read_text())['promotion_performed'] is False
             page.reload()
-            page.get_by_role('button',name='Advanced',exact=True).click()
-            page.get_by_role('button',name='Evaluation',exact=True).click()
+            expect(page.get_by_role('button',name='Advanced',exact=True)).to_have_attribute('aria-pressed','true')
+            expect(page.get_by_role('button',name='Evaluation',exact=True)).to_have_attribute('aria-pressed','true')
             expect(page.locator('.learning-review')).to_contain_text('Ready for human review')
             page.locator('.learning-review summary').click()
             for dark,width in ((False,1280),(True,1280),(True,768),(True,390)):

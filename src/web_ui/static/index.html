@@ -464,15 +464,40 @@ function stashTenderDraft() {
   });
 }
 
-function openSettings() {
+let appliedHash;
+function updateViewUrl(path, replace=false) {
+  const hash=path?'#'+path:'';
+  if(location.hash!==hash)history[replace?'replaceState':'pushState'](null,'',location.pathname+location.search+hash);
+  appliedHash=location.hash;
+}
+
+function restoreViewFromUrl() {
+  const path=location.hash.slice(1), section=path.split('/')[0];
+  const next=['lora-settings','training'].includes(section)?'training':section==='settings'?'settings':'tender';
+  if(appliedHash===location.hash&&view===next)return;
   stashTenderDraft();
-  view = "settings"; location.hash = "settings"; renderMain();
+  const previous=view;view=next;
+  if(view==='training') {
+    AutoTenderTraining.restoreRoute(path);
+    updateViewUrl(AutoTenderTraining.getRoute(),true);
+    if(previous!=='training')renderMain();
+  } else {
+    updateViewUrl(view==='settings'?'settings':'',true);
+    if(view==='tender'&&(!meta||previous!=='tender'))loadTender();else renderMain();
+  }
+}
+
+function openSettings(event) {
+  event?.preventDefault();
+  stashTenderDraft();
+  view = "settings"; updateViewUrl("settings"); renderMain();
 }
 
 function openTraining() {
   stashTenderDraft();
+  if(view === "training")return;
   view = "training";
-  location.hash = "training";
+  updateViewUrl(AutoTenderTraining.getRoute());
   renderMain();
 }
 
@@ -483,7 +508,7 @@ function renderTraining() {
   $("sub").textContent = "Choose and update the models for each task";
   $("content").innerHTML = '<div id="trainingWorkspace"></div>';
   AutoTenderTraining.mount($("trainingWorkspace"), async (tender, task) => {
-    view="tender";location.hash="";
+    view="tender";updateViewUrl("");
     await refreshTenders(tender);
     if(current!==tender||view!=="tender")return;
     if(tenderFinished()){
@@ -496,7 +521,7 @@ function renderTraining() {
       $("finaliseBtn").focus();$("tenderActionMsg").classList.remove("hidden");
       $("tenderActionMsg").textContent="When this tender is complete, choose Tender finalised to add its result and measurements.";
     }
-  }, settings => {uiSettings=settings;});
+  }, settings => {uiSettings=settings;}, () => updateViewUrl(AutoTenderTraining.getRoute()));
 }
 
 function renderMain() {
@@ -1059,7 +1084,7 @@ $("createBtn").addEventListener("click", async () => {
   if (!res.ok) { alert(j.error); return; }
   $("addForm").classList.add("hidden");
   stashTenderDraft();
-  history.replaceState(null, "", location.pathname);
+  updateViewUrl("");
   await refreshTenders(j.id);
 });
 
@@ -1069,13 +1094,14 @@ $("tenderList").addEventListener("click", async e => {
     if (!confirm("Delete this tender?")) return;
     await fetch(`/api/tenders/${del.dataset.del}`, { method: "DELETE" });
     if (current === del.dataset.del) current = null;
+    updateViewUrl("");
     await refreshTenders();
     return;
   }
   const li = e.target.closest("li[data-id]");
   if (li && (li.dataset.id !== current || view !== "tender")) {
     stashTenderDraft();
-    history.replaceState(null, "", location.pathname);
+    updateViewUrl("");
     current = li.dataset.id;
     renderSidebar();
     await loadTender();
@@ -1222,8 +1248,9 @@ $("hideNotes").addEventListener("change", e =>
 
 if (window.matchMedia("(max-width: 700px)").matches && localStorage.getItem("autotender_nav") === null) document.body.classList.add("navoff");
 refreshTenders().then(() => {
-  if (location.hash === "#training") openTraining();
-  else if (location.hash === "#settings") { view = "settings"; renderMain(); }
+  restoreViewFromUrl();
+  window.addEventListener('popstate',restoreViewFromUrl);
+  window.addEventListener('hashchange',restoreViewFromUrl);
 });
 </script>
 </body>

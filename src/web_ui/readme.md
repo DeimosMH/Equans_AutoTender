@@ -91,6 +91,14 @@ probability. It has three simple menus:
 - **Base models**: choose a base LLM independently for each task. Changing a base
   clears an incompatible LoRA without affecting the other tasks.
 
+The URL follows every menu and task tab. For example,
+`/#lora-settings/advanced/configuration/input-processing` opens Configuration
+with Input processing selected, and
+`/#lora-settings/loras/update/productivity-factors` opens that task's update form.
+Copied links, reloads and browser Back/Forward restore those tabs. Existing
+`/#training` links still work. Links share navigation only: model choices,
+Local/Cloud configuration, files and unsaved form values are not included.
+
 These are interactive **UI previews**, as requested while the backend is pending.
 Choices, paths, parameters and the latest update request per task persist in this
 browser's `tendif_lora_preferences_v1` localStorage entry. Existing version metadata
@@ -221,6 +229,7 @@ and responsive layouts.
 
 The LoRA settings browser check covers model/version compatibility, per-task
 choices, manual fallback, request contents, paths and parameter persistence. It
+also checks shared tab links, reloads, Back/Forward and invalid-route fallbacks. It
 asserts that the preview sends no writes to the backend and preserves server settings.
 
 The feedback browser check also covers bound candidate imports, rejection of invalid

@@ -11,7 +11,7 @@ window.AutoTenderTraining = (() => {
   const status = s => ({ready_for_training:'Data ready',blocked:'More examples needed',failed:'Failed',queued:'Queued',collecting:'Collecting sources',preparing:'Preparing dataset',collected:'Sources collected'}[s] || s);
   const date = v => v ? new Date(v).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
   const artifact = (j,n) => `/api/settings/jobs/${encodeURIComponent(j.id)}/artifacts/${encodeURIComponent(n)}`;
-  let host, state, settings, timer, generation = 0, active='market_extraction', mode='simple', tab='configuration', selected={}, model, include=true, resultSignature='', openTender, settingsChanged;
+  let host, state, settings, timer, generation = 0, active='market_extraction', mode='simple', tab='configuration', selected={}, model, include=true, resultSignature='', openTender, settingsChanged, navigationChanged;
   const preparing = new Set();
   const $ = id => host?.querySelector('#'+id);
   async function api(path, body) {
@@ -28,15 +28,33 @@ window.AutoTenderTraining = (() => {
   function taskJobs() { return state.jobs.filter(j=>j.kind!=='collection'&&j.task===active); }
   function currentJob() { const jobs=taskJobs(); return jobs.find(j=>j.id===selected[active]) || jobs[0]; }
   function capture() { if($('tr-model')) model=$('tr-model').value; if($('tr-existing')) include=$('tr-existing').checked; }
+  function getRoute() {
+    const lora=TendifLoras.getRoute();
+    const page=mode==='advanced'?(tab==='datasets'?'data-preparation':tab):(lora.view==='base'?'base-models':lora.view);
+    const task=mode==='advanced'?(tab==='datasets'?active:tab==='configuration'?lora.task:null):(lora.view==='update'?lora.task:null);
+    return `lora-settings/${mode==='advanced'?'advanced':'loras'}/${page}${task?'/'+task.replaceAll('_','-'):''}`;
+  }
+  function restoreRoute(path) {
+    capture();
+    const [,section,page,taskSlug='']=path.split('/'), task=taskSlug.replaceAll('-','_');
+    mode=section==='advanced'?'advanced':'simple';
+    if(mode==='advanced') {
+      tab=page==='data-preparation'?'datasets':['configuration','sources','history','evaluation'].includes(page)?page:'configuration';
+      if(tab==='datasets')active=tasks.some(t=>t.key===task)?task:'market_extraction';
+      if(tab==='configuration')TendifLoras.setRoute(TendifLoras.getRoute().view,task);
+    } else TendifLoras.setRoute(page==='base-models'?'base':page,task);
+    render();
+  }
+  function navigate() {render();navigationChanged();}
   function render() {
-    if(!host?.isConnected) return;
+    if(!host?.isConnected||!state) return;
     host.dataset.mode=mode;
     host.innerHTML=`<div class="tr-mode-tabs" aria-label="LoRA workspace">${[['simple','LoRAs'],['advanced','Advanced']].map(([id,label])=>`<button data-mode="${id}" class="${mode===id?'selected':''}" aria-pressed="${mode===id}">${label}</button>`).join('')}</div>
       ${mode==='advanced'?`<div class="tr-tabs" aria-label="Administration views">${[['configuration','Configuration'],['datasets','Data preparation'],['sources','Sources'],['history','History'],['evaluation','Evaluation']].map(([id,label])=>`<button data-tab="${id}" class="${tab===id?'selected':''}" aria-pressed="${tab===id}">${label}</button>`).join('')}</div>`:''}
       <div id="tr-message" role="status" aria-live="polite" hidden></div><div id="tr-page"></div>`;
-    host.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{capture();mode=b.dataset.mode;render();host.querySelector(`[data-mode="${mode}"]`).focus();});
-    host.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{capture();tab=b.dataset.tab;render();host.querySelector(`[data-tab="${tab}"]`).focus();});
-    if(mode==='simple'||tab==='configuration')TendifLoras.mount($('tr-page'),settings,state.evidence,mode==='advanced');
+    host.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{capture();mode=b.dataset.mode;navigate();host.querySelector(`[data-mode="${mode}"]`).focus();});
+    host.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{capture();tab=b.dataset.tab;navigate();host.querySelector(`[data-tab="${tab}"]`).focus();});
+    if(mode==='simple'||tab==='configuration')TendifLoras.mount($('tr-page'),settings,state.evidence,mode==='advanced',navigationChanged);
     else if(tab==='datasets')renderDataset();else if(tab==='sources')renderSources();
     else if(tab==='evaluation')TendifLearning.mount($('tr-page'));else renderHistory();
   }
@@ -64,7 +82,7 @@ window.AutoTenderTraining = (() => {
         </section>
       </section><p class="tr-connection">Training service not connected</p>
       <details class="tr-provider"><summary>Connection settings</summary><p>Endpoint ${state.provider.endpoint_configured?'configured':'not configured'} · Credentials ${state.provider.credential_configured?'configured':'not configured'}. The cloud training API integration is pending.</p><p class="tr-help">Server configuration: <code>AUTOTENDER_TRAINING_ENDPOINT</code> and <code>AUTOTENDER_TRAINING_API_KEY</code>.</p></details>`;
-    host.querySelectorAll('[data-task]').forEach(b=>b.onclick=()=>{capture();active=b.dataset.task;renderDataset();host.querySelector(`[data-task="${active}"]`).focus();});
+    host.querySelectorAll('[data-task]').forEach(b=>b.onclick=()=>{capture();active=b.dataset.task;renderDataset();navigationChanged();host.querySelector(`[data-task="${active}"]`).focus();});
     $('tr-evidence').before($('tr-options'));$('tr-upload-btn').onclick=()=>$('tr-file').click();$('tr-file').onchange=upload;$('tr-save-model').onclick=saveModel;
     $('tr-prepare').onclick=prepare;
     $('tr-add').onclick=addEvidence;
@@ -85,8 +103,8 @@ window.AutoTenderTraining = (() => {
   }
   function addEvidence() {
     capture();
-    if(active==='market_extraction'){mode='advanced';tab='sources';render();$('tr-urls').focus();return;}
-    if(active==='input_processing'){mode='advanced';tab='datasets';render();$('tr-upload-btn').focus();return;}
+    if(active==='market_extraction'){mode='advanced';tab='sources';navigate();$('tr-urls').focus();return;}
+    if(active==='input_processing'){mode='advanced';tab='datasets';navigate();$('tr-upload-btn').focus();return;}
     const tenders=[...state.tenders].sort((a,b)=>Number(b.finalised)-Number(a.finalised));
     const panel=$('tr-tender-picker');panel.hidden=false;
     if(!tenders.length){panel.innerHTML='<p>Upload and calculate a tender first. When it is complete, choose <b>Tender finalised</b> to add its result and measurements.</p>';return;}
@@ -184,7 +202,7 @@ window.AutoTenderTraining = (() => {
   }
   function renderHistory() {
     $('tr-page').innerHTML=`<section class="tr-card"><div class="tr-eyebrow">AUDIT TRAIL</div><h3>Collection & preparation runs</h3><p>Review previous collections and datasets.</p><div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>Run</th><th>Examples</th><th>Status</th><th>Created</th><th>Review</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td><b>${j.kind==='collection'?'Source collection':escape(tasks.find(t=>t.key===j.task)?.label||j.task)}</b></td><td>${j.manifest?.accepted_count??j.public_record_count??'—'}</td><td>${badge(j)}</td><td>${date(j.created_at)}</td><td><button data-run="${j.id}">View</button></td></tr>`).join('')||'<tr><td colspan="5">No preparations yet. Open Data preparation to get started.</td></tr>'}</tbody></table></div></section>`;
-    host.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>{const j=state.jobs.find(j=>j.id===b.dataset.run);if(j.kind==='collection')tab='sources';else{active=j.task;selected[active]=j.id;tab='datasets';}render();});
+    host.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>{const j=state.jobs.find(j=>j.id===b.dataset.run);if(j.kind==='collection')tab='sources';else{active=j.task;selected[active]=j.id;tab='datasets';}navigate();});
   }
   async function refresh() {
     const token=generation;
@@ -198,12 +216,12 @@ window.AutoTenderTraining = (() => {
     clearTimeout(timer);
     if(state.jobs.some(busy)) timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);
   }
-  async function mount(element, navigate=openTender, changed=settingsChanged) {
-    dispose();host=element;openTender=navigate;settingsChanged=changed;const token=generation;
+  async function mount(element, navigate=openTender, changed=settingsChanged, onNavigate=navigationChanged) {
+    dispose();host=element;state=null;openTender=navigate;settingsChanged=changed;navigationChanged=onNavigate;const token=generation;
     host.className='training';host.innerHTML='<div class="tr-card" role="status">Loading training workspace…</div>';
     try {const data=await Promise.all([api('/api/training'),api('/api/settings')]);if(token!==generation||!host.isConnected)return;[state,settings]=data;model??=state.default_model;render();if(state.jobs.some(busy))timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);}
     catch(e){if(token===generation&&host.isConnected){host.innerHTML='<div class="tr-card"><p role="alert"></p><button>Retry</button></div>';host.querySelector('p').textContent=e.message;host.querySelector('button').onclick=()=>mount(element);}}
   }
-  function dispose(){generation++;clearTimeout(timer);}
-  return {mount,dispose};
+  function dispose(){capture();generation++;clearTimeout(timer);}
+  return {mount,dispose,getRoute,restoreRoute};
 })();
