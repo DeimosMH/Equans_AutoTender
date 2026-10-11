@@ -15,8 +15,13 @@ submit offers automatically. `materials/README.md` defines the challenge and
 
 The user rejected a previous UI for bloat, inconsistent styling and layout bugs.
 Preserve the existing tender editor, orange/neutral theme, editable table and
-pricing controls. LoRA work has its own compact sidebar destination with three
-views: Datasets, Source library, Run history. Settings contains productivity and
+pricing controls. LoRA work has its own sidebar destination with two tabs:
+**Training** is deliberately simple: choose an improvement, see available evidence,
+prepare data, or open a tender to add results/measurements. **Advanced** holds all
+model/source/import controls, connection details, example previews, dataset splits
+and files, with Data preparation / Sources / History subviews. This is a UI split,
+not an authentication boundary; the server remains localhost-only with no auth.
+Settings contains productivity and
 appearance; diagnostic monitoring and candidate evaluation are collapsed.
 Active tenders show pricing and positions only: margin chips remain, while the
 extra scenario comparison and implementation disclaimer are removed. **Tender
@@ -29,6 +34,9 @@ links and controls readable in both themes; there are no default blue links.
 The requested base model is **GLM-5.3-Flash**. Default preparation ID:
 `glm-5.3-flash`; the provider may use another ID, so custom IDs are accepted and
 captured in each preparation run. Existing settings and old runs are retained.
+Training always uses saved evidence and the configured default model. Advanced
+allows a per-run override and an explicit **Save as default** action; it does not
+silently replace an existing model setting.
 The user confirms the model/training service will run in **Docker in the cloud**.
 Its endpoint and training API contract have not been provided. Remote upload,
 training, job polling and adapter serving are therefore pending integrations.
@@ -149,7 +157,7 @@ The UI offers **explicit project collection** separately from an optional
 for more awards. The current bounded search collects at most 20 awards over two
 pages per configured term; it is a sample, not the complete archive.
 
-Collection jobs archive their own source snapshots. The Source library combines
+Collection jobs archive their own source snapshots. Advanced → Sources combines
 the checked-in-workspace corpus with completed job collections, deduplicated by
 publication ID, preferring newer archived job snapshots. Preparation reuses this
 library without fetching again. No source data is repurposed as an own-bid label.
@@ -158,7 +166,7 @@ report success. Hash mismatches or missing raw public snapshots fail preparation
 
 This workspace has 45 real awards plus the supplied tender (46 publications).
 Source files are local generated artifacts, not guaranteed on a fresh checkout.
-Use Source library -> supplied example / optional historical search to rebuild.
+Use Advanced → Sources → supplied example / optional historical search to rebuild.
 SearxNG is available at `http://127.0.0.1:8888/search?q=...&format=json`; its initial
 GLM search returned no results. Use primary documentation when search is empty.
 
@@ -206,7 +214,7 @@ public-source failures blocking a productivity or own-bid dataset.
 
 | Route | Behavior |
 | --- | --- |
-| `GET /api/training` | Source inventory, uploaded evidence, runs, credential presence only |
+| `GET /api/training` | Sources, validated evidence counts/distinct projects per task, calculated tenders, saved default model, runs, credential presence only |
 | `POST /api/training/collect` | `{urls: [...], search_hvac: false}` -> persisted collection job |
 | `POST /api/training/prepare` | `{task, base_model, include_existing: true}` -> persisted preparation |
 | `GET /api/training/<job>/preview?split=train` | At most three examples with evidence metadata |
@@ -224,7 +232,7 @@ public-source failures blocking a productivity or own-bid dataset.
 
 Legacy `/api/settings/update` remains supported for task URLs and preparation,
 with explicit-source collection only. CLI `prepare --url` has the same behavior.
-Use `--jobs src/web_ui/training_jobs` to show CLI runs in the UI's Run history.
+Use `--jobs src/web_ui/training_jobs` to show CLI runs in Advanced → History.
 
 ## `_4` evaluation preparation and review
 
@@ -341,3 +349,12 @@ pass for the ten existing screens and three additional candidate-review layouts
 (light, dark and mobile). JSON-bound CLI preparation/import, Python compilation,
 JavaScript syntax and diff whitespace checks pass. No cloud API calls, model
 training or adapter activation were performed; those still require the endpoint.
+
+The simplified Training / Advanced follow-up passes **10 workspace API tests**
+and the updated Playwright training workflow. Coverage includes distinct-project
+guidance, saved model defaults, exclusion of technical controls from Training,
+immediate upload counts, keyboard focus across tabs and direct navigation to a
+finalised tender's measurement form. A separate axe/layout check passes all 18
+combinations of six training states (empty, ready, more evidence, admin details,
+sources and history) in light, dark and 390px mobile layouts. The backend and
+browser tests use temporary storage; existing tenders and settings are preserved.

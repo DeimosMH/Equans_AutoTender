@@ -77,28 +77,35 @@ removes the directory and its current outcome/productivity training exports.
 
 ## LoRA training
 
-Open **LoRA training** in the sidebar, or `/#training`. It uses the existing
-app theme and has three compact views:
+Open **LoRA training** in the sidebar, or `/#training`. Two tabs separate everyday
+use from administration:
 
-- **Datasets**: choose public notices, reviewed tender matching, own bid outcomes
-  or measured productivity. Upload validated JSONL, choose existing evidence and
-  set the provider model ID (default `glm-5.3-flash`). Prepare, inspect counts and
-  blockers, preview examples by split, and download a complete ZIP bundle.
-- **Source library**: collect explicit simap URLs; optionally enable bounded
-  historical HVAC award search. Review/filter publications and source hashes.
-  New collections are reusable by later preparations.
-- **Run history**: reopen persisted collection/preparation runs and their artifacts.
+- **Training**: choose what to improve, see the available evidence, and prepare
+  training data. Saved evidence and the configured default model are included
+  automatically. **Add tender results** and **Add measurements** open the chosen
+  tender's finalised form. Empty states explain the next action without technical
+  controls, dataset splits or file formats.
+- **Advanced**: **Data preparation** contains the model ID, **Save as default**,
+  existing-source selection, validated JSONL imports, example previews, split
+  counts and downloadable bundles. **Sources** imports simap projects or searches
+  historical ventilation awards. **History** reopens previous preparations and
+  collections. Connection details are collapsed under Data preparation.
+
+Fresh settings default to `glm-5.3-flash`; existing model settings are preserved.
+An Advanced model override applies to that preparation unless saved as default.
+Advanced is a UI separation for administrators, not an access-control boundary;
+the app remains a local tool without authentication.
 
 The model will run in cloud Docker. Its endpoint and LoRA API contract are pending;
-preparation does not submit training or activate a model. Connection requirements
-are available in a disclosure. The training workflow never asks for a key in the UI.
+preparation does not submit training or activate a model. The training workflow
+never asks for a key in the UI.
 See [unified context](../../PROJECT_CONTEXT.md) for boundaries and API contracts.
 
 ## Settings
 
 Settings retains editable productivity factors and appearance. Monitoring and
 candidate evaluation are under a disclosure. The target model for a new dataset
-is entered directly in Training. Legacy model/path settings remain stored but
+is configured in **LoRA training → Advanced**. Legacy model/path settings remain stored but
 are no longer shown as controls.
 AI productivity factors are demo values until a trained adapter is integrated.
 Manual and demo factors both remain editable and feed the calculator.

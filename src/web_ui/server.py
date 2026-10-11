@@ -303,26 +303,39 @@ def training_overview() -> dict:
     """Small, reviewable source inventory; raw API documents stay in artifacts."""
     records = PREPARATION_JOBS.public_records()
     uploads = []
+    evidence = {}
     for task in TASK_KEYS:
+        projects, count = set(), 0
         for path in sorted((UPLOADS / 'lora_data').glob(task + '_*')):
             try:
                 rows = read_upload(path.read_bytes(), task)
+                projects.update(str(r['project_id']).strip() for r in rows)
+                count += len(rows)
                 uploads.append({'task':task, 'file':path.name, 'records':len(rows),
                                 'projects':len({r['project_id'] for r in rows})})
             except (ValueError, UnicodeError) as exc:
                 uploads.append({'task':task, 'file':path.name, 'records':0, 'error':str(exc)})
+        uploaded_projects = len(projects)
+        existing = []
+        if task == 'market_extraction':
+            existing = [r.get('tender_id') or r.get('project_id') for r in records]
+        elif task == 'input_processing' and PREPARATION_JOBS.materials_dir:
+            from prepare_sponsor import sponsor_examples
+            existing = [r['project_id'] for r in sponsor_examples(PREPARATION_JOBS.materials_dir)]
+        projects.update(p for p in existing if p)
+        evidence[task] = {'examples':count + len(existing), 'projects':len(projects),
+                          'uploaded_examples':count, 'uploaded_projects':uploaded_projects}
     sources = []
     for record in sorted(records, key=lambda r:r.get('publication_date') or '', reverse=True):
         provenance = record.get('provenance', {})
         sources.append({**{key:record.get(key) for key in ('publication_id','title', 'record_type',
             'publication_date','buyer', 'canton')}, 'url':provenance.get('source_url'),
             'retrieved_at':provenance.get('retrieved_at'), 'sha256':provenance.get('sha256')})
-    sponsor_count = 0
-    if PREPARATION_JOBS.materials_dir:
-        from prepare_sponsor import sponsor_examples
-        sponsor_count = len(sponsor_examples(PREPARATION_JOBS.materials_dir))
+    sponsor_count = evidence['input_processing']['examples'] - evidence['input_processing']['uploaded_examples']
     return {'sources':sources, 'uploads':uploads, 'sponsor_records':sponsor_count,
-            'jobs':PREPARATION_JOBS.list(), 'default_model':'glm-5.3-flash',
+            'evidence':evidence, 'tenders':[{'id':t['id'], 'name':t['name'], 'finalised':is_finalised(t)}
+                for t in list_tenders() if calc_path(t['id']).exists()],
+            'jobs':PREPARATION_JOBS.list(), 'default_model':load_ui_settings()['base_model'],
             'provider':{'status':'awaiting_contract',
                 'endpoint_configured':bool(os.environ.get('AUTOTENDER_TRAINING_ENDPOINT')),
                 'credential_configured':bool(os.environ.get('AUTOTENDER_TRAINING_API_KEY')),

@@ -479,9 +479,23 @@ function renderTraining() {
   ["emptywrap", "welcome", "saveBtn", "dlwrap", "dlMenu", "renameBtn", "dirtyBadge", "reviewBadge", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
   $("content").classList.remove("hidden");
   $("tenderTitle").textContent = "LoRA training";
-  $("sub").textContent = "Collect sources, prepare datasets and review training evidence";
+  $("sub").textContent = "Improve Tendif with your tender history";
   $("content").innerHTML = '<div id="trainingWorkspace"></div>';
-  AutoTenderTraining.mount($("trainingWorkspace"));
+  AutoTenderTraining.mount($("trainingWorkspace"), async (tender, task) => {
+    view="tender";location.hash="";
+    await refreshTenders(tender);
+    if(current!==tender||view!=="tender")return;
+    if(tenderFinished()){
+      const panel=$("feedbackPanel");
+      if(task==="productivity_factors"){
+        const details=$("measurementForm").closest("details");details.open=true;
+        details.scrollIntoView({block:"center"});details.querySelector("summary").focus();
+      }else{panel.scrollIntoView({block:"start"});panel.tabIndex=-1;panel.focus({preventScroll:true});}
+    }else{
+      $("finaliseBtn").focus();$("tenderActionMsg").classList.remove("hidden");
+      $("tenderActionMsg").textContent="When this tender is complete, choose Tender finalised to add its result and measurements.";
+    }
+  }, settings => {uiSettings=settings;});
 }
 
 function renderMain() {

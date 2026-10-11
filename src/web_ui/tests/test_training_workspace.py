@@ -115,6 +115,7 @@ class WorkspaceTests(unittest.TestCase):
         model = 'cloud/glm-5.3-flash'
         saved = self.request('/api/settings',{'base_model':model})['settings']
         self.assertEqual(saved['base_model'],model)
+        self.assertEqual(self.request('/api/training')['default_model'],model)
         self.assertTrue(all(t['selected'] is None for t in saved['tasks'].values()))
         job = self.wait(self.request('/api/training/prepare',{
             'task':'market_extraction','base_model':model,'include_existing':True})['job'])
@@ -153,11 +154,33 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(json.load(res)['records'],1)
         overview = self.request('/api/training')
         self.assertEqual(overview['uploads'][0]['records'],1)
+        self.assertEqual(overview['evidence']['productivity_factors'],
+            {'examples':1,'projects':1,'uploaded_examples':1,'uploaded_projects':1})
         job = self.wait(self.request('/api/training/prepare',{
             'task':'productivity_factors','base_model':'glm-5.3-flash','include_existing':True})['job'])
         self.assertEqual(job['status'],'blocked')
         self.assertEqual(job['public_record_count'],0)
         self.assertEqual(job['manifest']['counts']['train'],1)
+
+    def test_training_guidance_counts_distinct_projects_and_calculated_tenders(self):
+        tender = self.calculated_tender()
+        self.request('/api/tenders/'+tender+'/finalise',{})
+        self.request('/api/tenders',{'name':'No calculation yet'})
+        directory=app.UPLOADS/'lora_data';directory.mkdir(parents=True)
+        for i in range(2):
+            row={'project_id':'shared-project','measurement_reference':'Measured work',
+                'input':{'site_type':'school'},'target':{'site_efficiency':.9+i*.01}}
+            (directory/f'productivity_factors_{i}.jsonl').write_text(json.dumps(row)+'\n')
+        overview=self.request('/api/training')
+        self.assertEqual(overview['evidence']['productivity_factors']['examples'],2)
+        self.assertEqual(overview['evidence']['productivity_factors']['projects'],1)
+        self.assertEqual(overview['evidence']['market_extraction']['projects'],5)
+        self.assertEqual(overview['tenders'],[{'id':tender,'name':'Completion workflow','finalised':True}])
+        # Invalid stored files are visible to administrators without inflating counts.
+        (directory/'productivity_factors_invalid.jsonl').write_text('{}\n')
+        overview=self.request('/api/training')
+        self.assertEqual(overview['evidence']['productivity_factors']['examples'],2)
+        self.assertTrue(any(u.get('error') for u in overview['uploads']))
 
     def test_collection_reusable_without_implicit_search(self):
         url = 'https://www.simap.ch/de/project-detail/d849c22b-3fc4-48d8-94c9-c45457544ab1'

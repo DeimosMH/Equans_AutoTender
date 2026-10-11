@@ -122,4 +122,4 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
   .bigbtn { font-size:15px; padding:12px 24px; }
   #renameInput { width:100%; }
 }
-.tr-requirements{margin:8px 0 16px;}.tr-requirements p{font-size:12px;}body.dark .tr-button{color:var(--ink);}.training .tr-result-head{margin-bottom:12px;}.training .tr-result{min-height:250px;}
+body.dark .tr-button { color:var(--ink); }
