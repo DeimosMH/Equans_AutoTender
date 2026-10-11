@@ -32,12 +32,13 @@ window.AutoTenderTraining = (() => {
     if(!host?.isConnected) return;
     host.dataset.mode=mode;
     host.innerHTML=`<div class="tr-mode-tabs" aria-label="LoRA workspace">${[['simple','LoRAs'],['advanced','Advanced']].map(([id,label])=>`<button data-mode="${id}" class="${mode===id?'selected':''}" aria-pressed="${mode===id}">${label}</button>`).join('')}</div>
-      ${mode==='advanced'?`<div class="tr-tabs" aria-label="Administration views">${[['configuration','Configuration'],['datasets','Data preparation'],['sources','Sources'],['history','History']].map(([id,label])=>`<button data-tab="${id}" class="${tab===id?'selected':''}" aria-pressed="${tab===id}">${label}</button>`).join('')}</div>`:''}
+      ${mode==='advanced'?`<div class="tr-tabs" aria-label="Administration views">${[['configuration','Configuration'],['datasets','Data preparation'],['sources','Sources'],['history','History'],['evaluation','Evaluation']].map(([id,label])=>`<button data-tab="${id}" class="${tab===id?'selected':''}" aria-pressed="${tab===id}">${label}</button>`).join('')}</div>`:''}
       <div id="tr-message" role="status" aria-live="polite" hidden></div><div id="tr-page"></div>`;
     host.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{capture();mode=b.dataset.mode;render();host.querySelector(`[data-mode="${mode}"]`).focus();});
     host.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{capture();tab=b.dataset.tab;render();host.querySelector(`[data-tab="${tab}"]`).focus();});
     if(mode==='simple'||tab==='configuration')TendifLoras.mount($('tr-page'),settings,state.evidence,mode==='advanced');
-    else if(tab==='datasets')renderDataset();else if(tab==='sources')renderSources();else renderHistory();
+    else if(tab==='datasets')renderDataset();else if(tab==='sources')renderSources();
+    else if(tab==='evaluation')TendifLearning.mount($('tr-page'));else renderHistory();
   }
   function evidence() {
     const data=state.evidence[active];

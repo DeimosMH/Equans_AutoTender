@@ -60,7 +60,7 @@ prepared datasets are not silently rewritten after measurement corrections.
 
 ## Monitoring and candidate review
 
-Open **Settings → Learning from completed tenders**. The collapsed workspace shows
+Open **LoRA settings → Advanced → Evaluation**. The workspace shows
 verified wins/losses, saved forecasts and Brier error (lower is better). The monitoring
 API also exposes calibration bins, signed bias, comparable competitor prices and
 two-sided Page-Hinkley diagnostics. Retrospective captures are excluded from forecast

@@ -112,6 +112,8 @@ example count comes from Tendif's current inventory; custom directories are not 
   from here. Connection details are collapsed.
 - **Sources**: import simap projects or search historical ventilation awards.
 - **History**: reopen previous preparations and collections.
+- **Evaluation**: review outcome/forecast history, prepare candidate evaluation
+  bundles and import model results.
 
 Fresh settings default to `glm-5.3-flash`; existing model settings are preserved.
 An Advanced model override applies to that preparation unless saved as default.
@@ -125,8 +127,8 @@ See [unified context](../../PROJECT_CONTEXT.md) for boundaries and API contracts
 
 ## Settings
 
-Settings retains editable productivity factors and appearance. Monitoring and
-candidate evaluation are under a disclosure. The target model for a new dataset
+Settings contains editable productivity factors and appearance. Monitoring and
+candidate evaluation live in **LoRA settings → Advanced → Evaluation**. The target model for a new dataset
 is configured in **LoRA settings → Advanced → Data preparation**. Preview choices
 are separate from these working preparation settings and calculator factors.
 AI productivity factors are demo values until a trained adapter is integrated.
@@ -189,7 +191,7 @@ are also excluded. Verified outcomes with a genuine prior snapshot and measured
 productivity feed their corresponding `_3` uploads. Reports remain available as
 Markdown/HTML/PDF; the UI links to PDF. No training runs automatically.
 Measured factors reload for correction and can be excluded from learning.
-Settings → **Learning from completed tenders** contains compact monitoring,
+**LoRA settings → Advanced → Evaluation** contains compact monitoring,
 evaluation bundle preparation, result import and saved review history. It checks
 candidate results against frozen local references, while keeping outcome labels
 out of the cloud inference bundle. The endpoint is still pending; no remote job

@@ -76,7 +76,6 @@ input::placeholder, textarea::placeholder { color:var(--muted); opacity:1; }
 .completion-inline button { flex-shrink:0; }
 #measurementMessage { margin-left:12px; }
 .learning-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:14px 0; }
-.learning-card { border:0; background:transparent; padding:8px 4px; margin:0; }
 .learning-heading h2, .learning-heading h3 { margin:0; font-size:14px; }
 .learning-heading p { margin-bottom:0; }
 .learning-heading button { flex-shrink:0; }

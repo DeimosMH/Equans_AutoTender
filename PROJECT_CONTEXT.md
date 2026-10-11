@@ -21,10 +21,10 @@ processing, productivity factors and success probability. Selecting a version
 also chooses its base model; changing a task's base clears an incompatible LoRA.
 Manual expert productivity remains an explicit fallback. **Advanced** contains
 Configuration (paths and per-task LoRA parameters), Data preparation, Sources
-and History. Public-notice extraction remains an admin dataset task. This is a UI split,
+History and Evaluation. Public-notice extraction remains an admin dataset task. This is a UI split,
 not an authentication boundary; the server remains localhost-only with no auth.
-Settings contains productivity and
-appearance; diagnostic monitoring and candidate evaluation are collapsed.
+General Settings contains productivity and appearance. Outcome monitoring and
+candidate evaluation are under **LoRA settings → Advanced → Evaluation**.
 Active tenders show pricing and positions only: margin chips remain, while the
 extra scenario comparison and implementation disclaimer are removed. **Tender
 finalised** saves edits/commercial choices, locks the estimate and reveals
@@ -79,7 +79,7 @@ Preparation and review work now; no successful training is implied.
 - `web_ui`: localhost stdlib HTTP server and dependency-free HTML/CSS/JS. Training
   admin preparation code is `static/training.js` / `static/training.css`;
   `static/lora-settings.js` owns the task-based UI preview. Tender/settings logic stays
-  in `static/index.html`; `static/learning.js` handles the collapsed review workspace.
+  in `static/index.html`; `static/learning.js` handles Advanced → Evaluation.
   `static/workspace.css` contains shared accessibility and
   completed-tender styles. No frontend build step.
 - `src/autoTender.py`: `calculate` runs calculator plus prediction; `prepare`
@@ -256,8 +256,8 @@ Use `--jobs src/web_ui/training_jobs` to show CLI runs in Advanced → History.
 ## `_4` evaluation preparation and review
 
 The local phase is implemented at the same endpoint-pending boundary as `_3`.
-**Settings → Learning from completed tenders** shows compact outcome/forecast
-metrics and persistent candidate reviews. It remains collapsed by default.
+**LoRA settings → Advanced → Evaluation** shows compact outcome/forecast
+metrics and persistent candidate reviews. General Settings has no learning controls.
 `POST /api/feedback/reviews` prepares from verified prospective snapshots using
 the configured model ID. At least 10 bids and both won/lost outcomes are required;
 insufficient bundles remain downloadable with blockers.

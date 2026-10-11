@@ -945,15 +945,11 @@ function renderSettings() {
         <label class="switch"><input type="checkbox" id="darkToggle" aria-label="Dark mode"><span class="slider"></span></label>
       </div>
     </section>
-    <details class="adv" id="learningDetails"><summary>Learning from completed tenders</summary><div id="learningWorkspace"></div></details>
     <div class="upload-row">
       <button id="saveSettingsBtn" class="primary">Save</button>
       <span id="settingsMsg" class="hint"></span>
     </div>`;
 
-  $("learningDetails").addEventListener("toggle",()=>{
-    if($("learningDetails").open && !$("learningWorkspace").hasChildNodes())TendifLearning.mount($("learningWorkspace"));
-  });
   $("darkToggle").checked = document.body.classList.contains("dark");
   $("darkToggle").addEventListener("change", e => setDarkMode(e.target.checked));
 

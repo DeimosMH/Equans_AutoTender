@@ -1,4 +1,4 @@
-/* Outcome monitoring and the cloud evaluation handoff, inside Settings. */
+/* Outcome monitoring and the cloud evaluation handoff, in LoRA settings → Advanced. */
 window.TendifLearning = {
   async mount(root) {
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -8,7 +8,7 @@ window.TendifLearning = {
         method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not load learning history.');return data;
     }
-    root.innerHTML=`<section class="card learning-card"><div class="learning-heading"><h2>Outcome history</h2><button data-refresh>Refresh</button></div><div data-metrics></div>
+    root.innerHTML=`<section class="tr-card"><div class="learning-heading"><h2>Outcome history</h2><button data-refresh>Refresh</button></div><div data-metrics></div>
       <div class="learning-heading"><div><h3>Candidate review</h3><p class="hint">Prepare an evaluation bundle for the cloud model, then import its results.</p></div><button data-prepare>Prepare review</button></div>
       <p data-message class="hint" role="status"></p><div data-reviews></div></section>`;
     const message=root.querySelector('[data-message]');

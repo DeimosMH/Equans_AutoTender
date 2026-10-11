@@ -40,7 +40,13 @@ with tempfile.TemporaryDirectory() as temp:
             page=browser.new_page(viewport={'width':1280,'height':1000})
             errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
             page.goto(address+'/#settings')
-            page.get_by_text('Learning from completed tenders',exact=True).click()
+            expect(page.locator('#saveSettingsBtn')).to_be_visible()
+            expect(page.locator('#learningDetails, [data-prepare]')).to_have_count(0)
+            page.locator('#trainingBtn').click()
+            expect(page.get_by_role('button',name='Select LoRAs',exact=True)).to_be_visible()
+            expect(page.locator('[data-prepare]')).to_have_count(0)
+            page.get_by_role('button',name='Advanced',exact=True).click()
+            page.get_by_role('button',name='Evaluation',exact=True).click()
             expect(page.locator('[data-metrics]')).to_contain_text('10')
             page.get_by_role('button',name='Prepare review',exact=True).click()
             expect(page.locator('[data-message]')).to_contain_text('Bundle ready.')
@@ -63,16 +69,19 @@ with tempfile.TemporaryDirectory() as temp:
             with page.expect_download() as result_download:
                 page.get_by_role('link',name='Download review',exact=False).click()
             assert json.loads(Path(result_download.value.path()).read_text())['promotion_performed'] is False
-            page.reload();page.get_by_text('Learning from completed tenders',exact=True).click()
+            page.reload()
+            page.get_by_role('button',name='Advanced',exact=True).click()
+            page.get_by_role('button',name='Evaluation',exact=True).click()
             expect(page.locator('.learning-review')).to_contain_text('Ready for human review')
             page.locator('.learning-review summary').click()
-            for dark,width in ((False,1280),(True,1280),(True,390)):
+            for dark,width in ((False,1280),(True,1280),(True,768),(True,390)):
                 page.evaluate('(dark)=>setDarkMode(dark)',dark)
                 page.set_viewport_size({'width':width,'height':1000})
                 if width==390:
                     page.evaluate('document.body.classList.add("navoff")')
                     page.wait_for_function('document.querySelector("nav").getBoundingClientRect().width <= 1')
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                assert page.evaluate('document.querySelector(".views").scrollWidth <= document.querySelector(".views").clientWidth')
                 axe=Path('/tmp/autotender-axe.min.js')
                 if axe.exists():
                     page.add_script_tag(path=str(axe))
