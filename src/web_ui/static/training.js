@@ -32,16 +32,17 @@ window.AutoTenderTraining = (() => {
     const lora=TendifLoras.getRoute();
     const page=mode==='advanced'?(tab==='datasets'?'data-preparation':tab):(lora.view==='base'?'base-models':lora.view);
     const task=mode==='advanced'?(tab==='datasets'?active:tab==='configuration'?lora.task:null):(lora.view==='update'?lora.task:null);
-    return `lora-settings/${mode==='advanced'?'advanced':'loras'}/${page}${task?'/'+task.replaceAll('_','-'):''}`;
+    const runtime=mode==='advanced'&&tab==='configuration'?lora.runtime:null;
+    return `lora-settings/${mode==='advanced'?'advanced':'loras'}/${page}${task?'/'+task.replaceAll('_','-'):''}${runtime?'/'+runtime:''}`;
   }
   function restoreRoute(path) {
     capture();
-    const [,section,page,taskSlug='']=path.split('/'), task=taskSlug.replaceAll('-','_');
+    const [,section,page,taskSlug='',runtime]=path.split('/'), task=taskSlug.replaceAll('-','_');
     mode=section==='advanced'?'advanced':'simple';
     if(mode==='advanced') {
       tab=page==='data-preparation'?'datasets':['configuration','sources','history','evaluation'].includes(page)?page:'configuration';
       if(tab==='datasets')active=tasks.some(t=>t.key===task)?task:'market_extraction';
-      if(tab==='configuration')TendifLoras.setRoute(TendifLoras.getRoute().view,task);
+      if(tab==='configuration')TendifLoras.setRoute(TendifLoras.getRoute().view,task,runtime);
     } else TendifLoras.setRoute(page==='base-models'?'base':page,task);
     render();
   }
@@ -219,7 +220,7 @@ window.AutoTenderTraining = (() => {
   async function mount(element, navigate=openTender, changed=settingsChanged, onNavigate=navigationChanged) {
     dispose();host=element;state=null;openTender=navigate;settingsChanged=changed;navigationChanged=onNavigate;const token=generation;
     host.className='training';host.innerHTML='<div class="tr-card" role="status">Loading training workspace…</div>';
-    try {const data=await Promise.all([api('/api/training'),api('/api/settings')]);if(token!==generation||!host.isConnected)return;[state,settings]=data;model??=state.default_model;render();if(state.jobs.some(busy))timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);}
+    try {const data=await Promise.all([api('/api/training'),api('/api/settings')]);if(token!==generation||!host.isConnected)return;[state,settings]=data;model??=state.default_model;render();navigationChanged(true);if(state.jobs.some(busy))timer=setTimeout(()=>refresh().catch(e=>message(e.message,true)),1600);}
     catch(e){if(token===generation&&host.isConnected){host.innerHTML='<div class="tr-card"><p role="alert"></p><button>Retry</button></div>';host.querySelector('p').textContent=e.message;host.querySelector('button').onclick=()=>mount(element);}}
   }
   function dispose(){capture();generation++;clearTimeout(timer);}

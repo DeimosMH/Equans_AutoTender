@@ -26,11 +26,13 @@ not an authentication boundary; the server remains localhost-only with no auth.
 General Settings contains productivity and appearance. Outcome monitoring and
 candidate evaluation are under **LoRA settings → Advanced → Evaluation**.
 LoRA menus and task tabs have shareable hash paths, for example
-`/#lora-settings/advanced/configuration/input-processing` and
+`/#lora-settings/advanced/configuration/input-processing/cloud` and
 `/#lora-settings/loras/update/productivity-factors`. Reload, direct links and
 browser Back/Forward restore the visible tab hierarchy. Legacy `/#training`
-opens Select LoRAs; invalid paths fall back to valid tabs. The URL carries
-navigation only, never model choices, Local/Cloud settings, endpoints or form data.
+opens Select LoRAs; invalid paths fall back to valid tabs. Configuration paths
+include Local/Cloud; explicit selections override the displayed browser preference
+without saving it. Older paths without a mode use the current browser selection,
+defaulting to Cloud. URLs exclude endpoints, paths, model choices and other form data.
 Active tenders show pricing and positions only: margin chips remain, while the
 extra scenario comparison and implementation disclaimer are removed. **Tender
 finalised** saves edits/commercial choices, locks the estimate and reveals

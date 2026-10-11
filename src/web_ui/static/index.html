@@ -521,7 +521,7 @@ function renderTraining() {
       $("finaliseBtn").focus();$("tenderActionMsg").classList.remove("hidden");
       $("tenderActionMsg").textContent="When this tender is complete, choose Tender finalised to add its result and measurements.";
     }
-  }, settings => {uiSettings=settings;}, () => updateViewUrl(AutoTenderTraining.getRoute()));
+  }, settings => {uiSettings=settings;}, (replace=false) => updateViewUrl(AutoTenderTraining.getRoute(),replace));
 }
 
 function renderMain() {

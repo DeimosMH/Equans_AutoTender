@@ -11,7 +11,7 @@ window.TendifLoras = (() => {
   const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const versionKey=v=>JSON.stringify([v.base,v.version,v.adapter_id||'']);
   const modelName=id=>id==='glm-5.3-flash'?'GLM 5.3 Flash':id;
-  let host,settings,evidence,prefs,view='select',task='input_processing',advanced=false,navigationChanged;
+  let host,settings,evidence,prefs,view='select',task='input_processing',advanced=false,navigationChanged,pendingRuntime;
   const $=id=>host.querySelector('#'+id);
   const versions=key=>settings.tasks[key]?.versions||[];
   const chosen=key=>versions(key).find(v=>versionKey(v)===prefs.tasks[key].selected);
@@ -50,13 +50,16 @@ window.TendifLoras = (() => {
     try{localStorage.setItem(storageKey,JSON.stringify(prefs));message(text);return true;}
     catch{message('Could not save. Allow browser storage and try again.',true);return false;}
   }
-  function getRoute() {return {view,task};}
-  function setRoute(nextView,nextTask) {
+  function getRoute() {return {view,task,runtime:pendingRuntime??prefs?.advanced.execution_mode};}
+  function setRoute(nextView,nextTask,runtime) {
     view=['select','update','base'].includes(nextView)?nextView:'select';
     task=tasks.some(t=>t.key===nextTask)?nextTask:'input_processing';
+    pendingRuntime=['local','cloud'].includes(runtime)?runtime:undefined;
   }
   function mount(element,options,inventory,isAdvanced=false,onNavigate=()=>{}) {
-    host=element;settings=options;evidence=inventory;advanced=isAdvanced;navigationChanged=onNavigate;prefs??=load();render();
+    host=element;settings=options;evidence=inventory;advanced=isAdvanced;navigationChanged=onNavigate;prefs??=load();
+    if(pendingRuntime){prefs.advanced.execution_mode=pendingRuntime;pendingRuntime=undefined;}
+    render();
   }
   function taskTabs() {
     return `<div class="tr-task-tabs" role="group" aria-label="LoRA task">${tasks.map(t=>`<button type="button" data-lm-task="${t.key}" class="${task===t.key?'selected':''}" aria-pressed="${task===t.key}">${t.label}</button>`).join('')}</div>`;
@@ -154,7 +157,7 @@ window.TendifLoras = (() => {
       <div class="lm-parameters"><h4>Training parameters</h4>${taskTabs()}<div class="lm-fields lm-numbers">${[['rank','Rank',1,256,1],['alpha','Alpha',1,1024,1],['dropout','Dropout',0,.9,.01],['epochs','Epochs',.1,100,.1],['learning_rate','Learning rate',.000001,.1,.000001]].map(([key,label,min,max,step])=>`<label class="tr-field">${label}<input type="number" data-lm-parameter="${key}" value="${escape(prefs.tasks[task].parameters[key])}" min="${min}" max="${max}" step="${step}" required></label>`).join('')}</div></div>
       <div class="lm-footer"><button class="primary">Save configuration</button></div>
     </form>`;
-    host.querySelectorAll('[data-lm-runtime]').forEach(button=>button.onclick=()=>{config.execution_mode=button.dataset.lmRuntime;render();host.querySelector(`[data-lm-runtime="${config.execution_mode}"]`).focus();});
+    host.querySelectorAll('[data-lm-runtime]').forEach(button=>button.onclick=()=>{config.execution_mode=button.dataset.lmRuntime;render();navigationChanged();host.querySelector(`[data-lm-runtime="${config.execution_mode}"]`).focus();});
     if($('lm-cloud-endpoint'))$('lm-cloud-endpoint').oninput=e=>{config.cloud_endpoint=e.target.value;e.target.setCustomValidity('');};
     host.querySelectorAll('[data-lm-path]').forEach(input=>input.oninput=()=>{prefs.advanced[input.dataset.lmPath]=input.value;});
     host.querySelectorAll('[data-lm-parameter]').forEach(input=>input.oninput=()=>{if(input.validity.valid)prefs.tasks[task].parameters[input.dataset.lmParameter]=Number(input.value);});

@@ -70,6 +70,16 @@ with tempfile.TemporaryDirectory() as temp:
             expect(page.locator('#lm-message')).to_contain_text('Configuration saved')
             page.get_by_role('button', name='Local', exact=True).click()
             expect(page.get_by_role('button', name='Local', exact=True)).to_be_focused()
+            expect(page).to_have_url(url+'/#lora-settings/advanced/configuration/input-processing/local')
+            page.go_back()
+            expect(page.get_by_role('button', name='Cloud', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(page).to_have_url(url+'/#lora-settings/advanced/configuration/input-processing/cloud')
+            page.go_forward()
+            expect(page.get_by_role('button', name='Local', exact=True)).to_have_attribute('aria-pressed', 'true')
+            page.reload()
+            expect(page.get_by_role('button', name='Local', exact=True)).to_have_attribute('aria-pressed', 'true')
+            # The link restores the form selection without saving over the stored configuration.
+            assert page.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1")).advanced.execution_mode') == 'cloud'
             expect(page.locator('#lm-cloud-endpoint')).to_have_count(0)
             page.locator('[data-lm-path="data_dir"]').fill('/data/reviewed-tenders')
             page.locator('[data-lm-parameter="rank"]').fill('32')
@@ -201,10 +211,9 @@ with tempfile.TemporaryDirectory() as temp:
                 ('advanced/evaluation', ['Advanced', 'Evaluation']),
             ]
             for task, label in [('input-processing', 'Input processing'), ('productivity-factors', 'Productivity factors'), ('win-ratio', 'Success probability')]:
-                routes.extend([
-                    (f'loras/update/{task}', ['LoRAs', 'Update LoRAs', label]),
-                    (f'advanced/configuration/{task}', ['Advanced', 'Configuration', label]),
-                ])
+                routes.append((f'loras/update/{task}', ['LoRAs', 'Update LoRAs', label]))
+                for runtime in ['local', 'cloud']:
+                    routes.append((f'advanced/configuration/{task}/{runtime}', ['Advanced', 'Configuration', label, runtime.title()]))
             for task, label in [('market-extraction', 'Public notices'), ('input-processing', 'Tender matching'), ('win-ratio', 'Bid outcomes'), ('productivity-factors', 'Productivity')]:
                 routes.append((f'advanced/data-preparation/{task}', ['Advanced', 'Data preparation', label]))
             for path, buttons in routes:
@@ -215,11 +224,29 @@ with tempfile.TemporaryDirectory() as temp:
                 for button in buttons:
                     expect(shared.get_by_role('button', name=button, exact=True)).to_have_attribute('aria-pressed', 'true')
                 expect(shared).to_have_url(url+'/#lora-settings/'+path)
+            # An explicit Cloud link overrides a saved Local selection, keeping form values private.
+            saved_config = {'advanced': {'execution_mode': 'local', 'cloud_endpoint': 'https://training.example/v1', 'data_dir': '/data/reviewed'}}
+            shared.evaluate('(value)=>localStorage.setItem("tendif_lora_preferences_v1",JSON.stringify(value))', saved_config)
+            shared.goto(url+'/#lora-settings/advanced/configuration/win-ratio/cloud')
+            shared.reload()
+            expect(shared.get_by_role('button', name='Cloud', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(shared.locator('#lm-cloud-endpoint')).to_have_value('https://training.example/v1')
+            assert shared.evaluate('JSON.parse(localStorage.getItem("tendif_lora_preferences_v1"))') == saved_config
+            # Legacy links without a mode use the browser's saved selection.
+            shared.goto('about:blank')
+            shared.goto(url+'/#lora-settings/advanced/configuration/win-ratio')
+            expect(shared.get_by_role('button', name='Local', exact=True)).to_have_attribute('aria-pressed', 'true')
+            expect(shared).to_have_url(url+'/#lora-settings/advanced/configuration/win-ratio/local')
+            expect(shared.locator('[data-lm-path="data_dir"]')).to_have_value('/data/reviewed')
+            shared.evaluate('localStorage.removeItem("tendif_lora_preferences_v1")')
+            shared.goto(url+'/#lora-settings/advanced/configuration/input-processing/cloud')
+            shared.reload()
             # Partial and invalid paths fall back to a valid, canonical view.
             for path, canonical in [
                 ('training', 'loras/select'),
-                ('lora-settings/advanced/configuration', 'advanced/configuration/input-processing'),
-                ('lora-settings/advanced/unknown/invalid', 'advanced/configuration/input-processing'),
+                ('lora-settings/advanced/configuration', 'advanced/configuration/input-processing/cloud'),
+                ('lora-settings/advanced/unknown/invalid', 'advanced/configuration/input-processing/cloud'),
+                ('lora-settings/advanced/configuration/input-processing/invalid', 'advanced/configuration/input-processing/cloud'),
                 ('lora-settings/advanced/data-preparation/invalid', 'advanced/data-preparation/market-extraction'),
                 ('lora-settings/loras/update/invalid', 'loras/update/input-processing'),
                 ('lora-settings/unknown/%3Cscript%3E', 'loras/select'),
@@ -235,7 +262,7 @@ with tempfile.TemporaryDirectory() as temp:
             shared.get_by_role('button', name='Productivity factors', exact=True).click()
             delayed[0].continue_()
             shared.wait_for_load_state('networkidle')
-            expect(shared).to_have_url(url+'/#lora-settings/advanced/configuration/productivity-factors')
+            expect(shared).to_have_url(url+'/#lora-settings/advanced/configuration/productivity-factors/cloud')
             expect(shared.get_by_role('button', name='Productivity factors', exact=True)).to_have_attribute('aria-pressed', 'true')
             shared.close()
             assert not errors, errors

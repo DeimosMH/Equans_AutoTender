@@ -92,12 +92,14 @@ probability. It has three simple menus:
   clears an incompatible LoRA without affecting the other tasks.
 
 The URL follows every menu and task tab. For example,
-`/#lora-settings/advanced/configuration/input-processing` opens Configuration
-with Input processing selected, and
+`/#lora-settings/advanced/configuration/input-processing/cloud` opens Configuration
+with Input processing and Cloud selected, and
 `/#lora-settings/loras/update/productivity-factors` opens that task's update form.
 Copied links, reloads and browser Back/Forward restore those tabs. Existing
-`/#training` links still work. Links share navigation only: model choices,
-Local/Cloud configuration, files and unsaved form values are not included.
+`/#training` links still work. Configuration URLs include the Local/Cloud selection;
+older links without it use the current browser selection (Cloud by default).
+Endpoints, paths, model choices, files and other form values are not included.
+Opening a link changes the displayed selection without saving configuration.
 
 These are interactive **UI previews**, as requested while the backend is pending.
 Choices, paths, parameters and the latest update request per task persist in this
