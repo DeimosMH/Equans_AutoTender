@@ -2,9 +2,9 @@
 window.TendifLoras = (() => {
   const storageKey='tendif_lora_preferences_v1';
   const tasks=[
-    {key:'input_processing',label:'Input processing',description:'Read tender documents and match positions.',fallback:'Base model only'},
-    {key:'productivity_factors',label:'Productivity factors',description:'Estimate labour using experience and measured work.',fallback:'Expert values (manual)'},
-    {key:'win_ratio',label:'Success probability',description:'Estimate the chance of winning a tender.',fallback:'Current calculation'},
+    {key:'input_processing',label:'Input processing',fallback:'Base model only'},
+    {key:'productivity_factors',label:'Productivity factors',fallback:'Expert values (manual)'},
+    {key:'win_ratio',label:'Success probability',fallback:'Current calculation'},
   ];
   const parameters={rank:16,alpha:32,dropout:0.05,epochs:3,learning_rate:0.0002};
   const files={}; // File objects stay in this session; saved requests retain their metadata only.
@@ -75,11 +75,11 @@ window.TendifLoras = (() => {
   function renderSelection() {
     const baseView=view==='base';
     $('lm-panel').innerHTML=`<form id="lm-selection" class="tr-card lm-card"><h3>${baseView?'Base model for each task':'LoRA for each task'}</h3>
-      <p>${baseView?'Choose a base model for each task. Changing it clears an incompatible LoRA.':'Each LoRA uses the base model it was created for.'}</p>
+      ${baseView?'<p>Changing the base model clears an incompatible LoRA.</p>':''}
       ${tasks.map(t=>{
         const choice=prefs.tasks[t.key],options=versions(t.key);
         const models=[...new Set([settings.base_model,...settings.base_models,...options.map(v=>v.base),choice.base_model])];
-        return `<div class="lm-row"><div><label for="lm-${t.key}">${t.label}</label><p>${t.description}</p></div><div class="lm-choice">
+        return `<div class="lm-row"><div><label for="lm-${t.key}">${t.label}</label></div><div class="lm-choice">
           <select id="lm-${t.key}" data-lm-select="${t.key}">${baseView?models.map(m=>`<option value="${escape(m)}" ${choice.base_model===m?'selected':''}>${escape(modelName(m))}</option>`).join(''):
             `<option value="">${t.fallback}</option>${options.map(v=>`<option value="${escape(versionKey(v))}" ${choice.selected===versionKey(v)?'selected':''}>${escape(v.version)} · ${escape(modelName(v.base))}</option>`).join('')}`}</select>
           <p class="lm-base" id="lm-base-${t.key}">${baseView?`LoRA: ${escape(chosen(t.key)?.version||t.fallback)}`:`Base model: ${escape(modelName(choice.base_model))}`}</p>
@@ -150,9 +150,8 @@ window.TendifLoras = (() => {
   function renderAdvanced() {
     const config=prefs.advanced,cloud=config.execution_mode==='cloud';
     $('lm-panel').innerHTML=`<form id="lm-advanced" class="tr-card lm-card"><h3>Model service &amp; LoRA parameters</h3>
-      <p>Choose where base models and LoRAs run.</p>
       <div class="tr-task-tabs" role="group" aria-label="Model location">${['local','cloud'].map(mode=>`<button type="button" data-lm-runtime="${mode}" class="${config.execution_mode===mode?'selected':''}" aria-pressed="${config.execution_mode===mode}">${mode==='local'?'Local':'Cloud'}</button>`).join('')}</div>
-      ${cloud?`<label class="tr-field">Cloud endpoint<input id="lm-cloud-endpoint" type="url" value="${escape(config.cloud_endpoint)}" placeholder="https://your-service.example" maxlength="1000" spellcheck="false"></label><p class="tr-help">Your cloud service endpoint can be added later.</p>`:
+      ${cloud?`<div class="tr-field"><input id="lm-cloud-endpoint" type="url" aria-label="Cloud endpoint" value="${escape(config.cloud_endpoint)}" placeholder="https://your-service.example" maxlength="1000" spellcheck="false"></div>`:
         `<div class="lm-fields">${[['models_dir','Base models directory'],['loras_dir','LoRA directory'],['data_dir','Internal training data directory'],['cache_dir','Cache directory']].map(([key,label])=>`<label class="tr-field">${label}<input data-lm-path="${key}" value="${escape(config[key])}" required maxlength="300" spellcheck="false"></label>`).join('')}</div>`}
       <div class="lm-parameters"><h4>Training parameters</h4>${taskTabs()}<div class="lm-fields lm-numbers">${[['rank','Rank',1,256,1],['alpha','Alpha',1,1024,1],['dropout','Dropout',0,.9,.01],['epochs','Epochs',.1,100,.1],['learning_rate','Learning rate',.000001,.1,.000001]].map(([key,label,min,max,step])=>`<label class="tr-field">${label}<input type="number" data-lm-parameter="${key}" value="${escape(prefs.tasks[task].parameters[key])}" min="${min}" max="${max}" step="${step}" required></label>`).join('')}</div></div>
       <div class="lm-footer"><button class="primary">Save configuration</button></div>

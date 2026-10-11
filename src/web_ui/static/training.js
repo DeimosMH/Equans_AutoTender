@@ -1,10 +1,10 @@
 /* Training workspace. Source collection and dataset preparation are independent jobs. */
 window.AutoTenderTraining = (() => {
   const tasks = [
-    {key:'market_extraction', label:'Public notices', title:'Understand public tenders', source:'saved simap notices', description:'Use saved tender notices and awards from simap.', empty:'No notices saved yet', next:'Import a simap project or find past ventilation awards to get started.', add:'Add notices'},
-    {key:'input_processing', label:'Tender matching', title:'Match tender positions', source:'reviewed sample positions', description:'Learn from position descriptions matched to the right catalogue products.', empty:'No reviewed examples yet', next:'Import reviewed positions from your tenders to get started.', add:'Import reviewed examples'},
-    {key:'win_ratio', label:'Bid outcomes', title:'Improve bid estimates', description:'Uses verified results linked to offers saved before submission.', empty:'No eligible bid results yet', next:'Save an offer before submitting it, then record its verified result under Tender finalised.', add:'Add tender results'},
-    {key:'productivity_factors', label:'Productivity', title:'Improve productivity estimates', description:'Learn from measured work on completed tenders.', empty:'No measurements yet', next:'Add actual productivity to a finalised tender. Verified measurements appear here automatically.', add:'Add measurements'},
+    {key:'market_extraction', label:'Public notices', title:'Understand public tenders', source:'saved simap notices', empty:'No notices saved yet', next:'Import a simap project or find past ventilation awards to get started.', add:'Add notices'},
+    {key:'input_processing', label:'Tender matching', title:'Match tender positions', source:'reviewed sample positions', empty:'No reviewed examples yet', next:'Import reviewed positions from your tenders to get started.', add:'Import reviewed examples'},
+    {key:'win_ratio', label:'Bid outcomes', title:'Improve bid estimates', empty:'No eligible bid results yet', next:'Save an offer before submitting it, then record its verified result under Tender finalised.', add:'Add tender results'},
+    {key:'productivity_factors', label:'Productivity', title:'Improve productivity estimates', empty:'No measurements yet', next:'Add actual productivity to a finalised tender.', add:'Add measurements'},
   ];
   const busy = j => ['queued','collecting','preparing'].includes(j.status);
   const escape = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -66,9 +66,8 @@ window.AutoTenderTraining = (() => {
   function renderDataset() {
     const task=tasks.find(t=>t.key===active), uploads=state.uploads.filter(u=>u.task===active);
     const reusable=active==='market_extraction'?state.sources.length:active==='input_processing'?state.sponsor_records:0;
-    $('tr-page').innerHTML=`<p class="tr-question" id="tr-task-label">What should Tendif improve?</p>
-      <div class="tr-task-tabs" role="group" aria-labelledby="tr-task-label">${tasks.map(t=>`<button data-task="${t.key}" class="${t.key===active?'selected':''}" aria-pressed="${t.key===active}">${t.label}</button>`).join('')}</div>
-      <section class="tr-card tr-prepare-card"><h3>${task.title}</h3><p>${task.description}</p>
+    $('tr-page').innerHTML=`<div class="tr-task-tabs" role="group" aria-label="Dataset task">${tasks.map(t=>`<button data-task="${t.key}" class="${t.key===active?'selected':''}" aria-pressed="${t.key===active}">${t.label}</button>`).join('')}</div>
+      <section class="tr-card tr-prepare-card"><h3>${task.title}</h3>
         <div id="tr-evidence" class="tr-evidence"></div>
         <div class="tr-action"><button id="tr-prepare" class="primary">Prepare training data</button><button id="tr-add">${task.add}</button></div>
         <div id="tr-tender-picker" hidden></div>
@@ -82,7 +81,7 @@ window.AutoTenderTraining = (() => {
           ${uploads.filter(u=>u.error).map(u=>`<p class="err">${escape(u.file)}: ${escape(u.error)}</p>`).join('')}
         </section>
       </section><p class="tr-connection">Training service not connected</p>
-      <details class="tr-provider"><summary>Connection settings</summary><p>Endpoint ${state.provider.endpoint_configured?'configured':'not configured'} · Credentials ${state.provider.credential_configured?'configured':'not configured'}. The cloud training API integration is pending.</p><p class="tr-help">Server configuration: <code>AUTOTENDER_TRAINING_ENDPOINT</code> and <code>AUTOTENDER_TRAINING_API_KEY</code>.</p></details>`;
+      <details class="tr-provider"><summary>Connection settings</summary><p>Endpoint ${state.provider.endpoint_configured?'configured':'not configured'} · Credentials ${state.provider.credential_configured?'configured':'not configured'}.</p><p class="tr-help">Server configuration: <code>AUTOTENDER_TRAINING_ENDPOINT</code> and <code>AUTOTENDER_TRAINING_API_KEY</code>.</p></details>`;
     host.querySelectorAll('[data-task]').forEach(b=>b.onclick=()=>{capture();active=b.dataset.task;renderDataset();navigationChanged();host.querySelector(`[data-task="${active}"]`).focus();});
     $('tr-evidence').before($('tr-options'));$('tr-upload-btn').onclick=()=>$('tr-file').click();$('tr-file').onchange=upload;$('tr-save-model').onclick=saveModel;
     $('tr-prepare').onclick=prepare;
@@ -94,7 +93,7 @@ window.AutoTenderTraining = (() => {
     if(!$('tr-evidence'))return;
     const task=tasks.find(t=>t.key===active), data=evidence(), working=preparing.has(active)||taskJobs().some(busy);
     if($('tr-upload-count'))$('tr-upload-count').textContent=state.uploads.filter(u=>u.task===active).reduce((n,u)=>n+u.records,0);
-    $('tr-evidence').innerHTML=data.examples ? `<b>${data.examples} example${data.examples===1?'':'s'} from ${data.projects} tender${data.projects===1?'':'s'}</b><p>${data.projects<3?`Add examples from ${3-data.projects} more tender${data.projects===2?'':'s'} before training.`:'Saved evidence is included automatically. Tendif will check it and set aside examples for evaluation.'}</p>` : `<b>${task.empty}</b><p>${task.next}</p>`;
+    $('tr-evidence').innerHTML=data.examples ? `<b>${data.examples} example${data.examples===1?'':'s'} from ${data.projects} tender${data.projects===1?'':'s'}</b>${data.projects<3?`<p>Add examples from ${3-data.projects} more tender${data.projects===2?'':'s'} before training.</p>`:''}` : `<b>${task.empty}</b><p>${task.next}</p>`;
     $('tr-prepare').hidden=!data.examples&&!working;
     $('tr-prepare').disabled=working;
     $('tr-prepare').textContent=working?'Preparing…':'Prepare training data';
@@ -109,7 +108,7 @@ window.AutoTenderTraining = (() => {
     const tenders=[...state.tenders].sort((a,b)=>Number(b.finalised)-Number(a.finalised));
     const panel=$('tr-tender-picker');panel.hidden=false;
     if(!tenders.length){panel.innerHTML='<p>Upload and calculate a tender first. When it is complete, choose <b>Tender finalised</b> to add its result and measurements.</p>';return;}
-    panel.innerHTML=`<label class="tr-field">Choose a tender<select id="tr-tender">${tenders.map(t=>`<option value="${escape(t.id)}">${escape(t.name)}${t.finalised?' · Finalised':''}</option>`).join('')}</select></label><button id="tr-open-tender">Open tender</button><p class="tr-help">Completed tender forms save this evidence directly.</p>`;
+    panel.innerHTML=`<label class="tr-field">Choose a tender<select id="tr-tender">${tenders.map(t=>`<option value="${escape(t.id)}">${escape(t.name)}${t.finalised?' · Finalised':''}</option>`).join('')}</select></label><button id="tr-open-tender">Open tender</button>`;
     $('tr-open-tender').onclick=()=>openTender($('tr-tender').value,active).catch(e=>message(e.message,true));
     $('tr-tender').focus();
   }
@@ -178,8 +177,8 @@ window.AutoTenderTraining = (() => {
   }
   function renderSources() {
     const collected=state.jobs.find(j=>j.kind==='collection');
-    $('tr-page').innerHTML=`<div class="tr-grid tr-source-grid"><section class="tr-card"><div class="tr-eyebrow">COLLECT FROM SIMAP</div><h3>Add public notices</h3><p>Import a project directly, or search recent ventilation awards in German and French.</p><label class="tr-field">simap project links · one per line<textarea id="tr-urls" rows="4" placeholder="https://www.simap.ch/de/project-detail/…"></textarea></label><button class="tr-text-button" id="tr-sample">Use supplied tender example</button><label class="tr-source-choice"><input id="tr-search" type="checkbox"><span><b>Find past ventilation awards</b><small>Import up to 20 past awards</small></span></label><button id="tr-collect" class="primary">Import notices</button><p class="tr-help">Saved notices are available for training automatically. Duplicates are skipped.</p><div id="tr-collection-status"></div></section>
-      <section class="tr-card"><div class="tr-result-head"><div><div class="tr-eyebrow">SOURCE LIBRARY</div><h3>${state.sources.length} archived publications</h3></div></div><p></p><label class="tr-field">Filter publications<input id="tr-source-filter" type="search" placeholder="Search title, buyer or canton"></label><div class="tr-source-list" id="tr-source-list"></div><p class="tr-help">Source: simap.ch. Refer to the original publication for current authoritative information.</p></section></div>
+    $('tr-page').innerHTML=`<div class="tr-grid tr-source-grid"><section class="tr-card"><h3>Add public notices</h3><label class="tr-field">simap project links · one per line<textarea id="tr-urls" rows="4" placeholder="https://www.simap.ch/de/project-detail/…"></textarea></label><button class="tr-text-button" id="tr-sample">Use supplied tender example</button><label class="tr-source-choice"><input id="tr-search" type="checkbox"><span><b>Find past ventilation awards</b><small>Up to 20 awards · German and French</small></span></label><button id="tr-collect" class="primary">Import notices</button><p class="tr-help">Duplicates are skipped.</p><div id="tr-collection-status"></div></section>
+      <section class="tr-card"><div class="tr-result-head"><h3>${state.sources.length} archived publications</h3></div><label class="tr-field">Filter publications<input id="tr-source-filter" type="search" placeholder="Search title, buyer or canton"></label><div class="tr-source-list" id="tr-source-list"></div></section></div>
       <details class="tr-card"><summary>Imported data files</summary>${state.uploads.length?`<div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>File</th><th>Task</th><th>Records</th><th>Projects</th></tr></thead><tbody>${state.uploads.map(u=>`<tr><td>${escape(u.file)}${u.error?`<span class="err">${escape(u.error)}</span>`:''}</td><td>${escape(tasks.find(t=>t.key===u.task)?.label)}</td><td>${u.records}</td><td>${u.projects||'—'}</td></tr>`).join('')}</tbody></table></div>`:'<p>No additional files imported.</p>'}</details>`;
     $('tr-sample').onclick=()=>{$('tr-urls').value='https://www.simap.ch/de/project-detail/d849c22b-3fc4-48d8-94c9-c45457544ab1';};
     $('tr-source-filter').oninput=renderSourceList;
@@ -202,7 +201,7 @@ window.AutoTenderTraining = (() => {
     $('tr-source-list').innerHTML=rows.map(s=>`<article><div><span class="tr-badge ${s.record_type==='market_award'?'good':''}">${s.record_type==='market_award'?'Award':'Tender'}</span><time>${escape(s.publication_date)}</time></div><b>${escape(s.title)}</b><p>${escape(s.buyer||'Buyer unspecified')}${s.canton?' · '+escape(s.canton):''}</p>${/^https:\/\/(www\.)?simap\.ch\//.test(s.url)?`<a href="${escape(s.url)}" target="_blank" rel="noopener">View on simap ↗</a>`:''}<details><summary>Source provenance</summary><p>Retrieved ${escape(s.retrieved_at||'See source artifact')}</p><code>${escape(s.sha256||'See source artifact')}</code></details></article>`).join('')||'<p>No publications match. Collect a source to get started.</p>';
   }
   function renderHistory() {
-    $('tr-page').innerHTML=`<section class="tr-card"><div class="tr-eyebrow">AUDIT TRAIL</div><h3>Collection & preparation runs</h3><p>Review previous collections and datasets.</p><div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>Run</th><th>Examples</th><th>Status</th><th>Created</th><th>Review</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td><b>${j.kind==='collection'?'Source collection':escape(tasks.find(t=>t.key===j.task)?.label||j.task)}</b></td><td>${j.manifest?.accepted_count??j.public_record_count??'—'}</td><td>${badge(j)}</td><td>${date(j.created_at)}</td><td><button data-run="${j.id}">View</button></td></tr>`).join('')||'<tr><td colspan="5">No preparations yet. Open Data preparation to get started.</td></tr>'}</tbody></table></div></section>`;
+    $('tr-page').innerHTML=`<section class="tr-card"><h3>Collection & preparation runs</h3><div class="tr-table-wrap"><table class="tr-table"><thead><tr><th>Run</th><th>Examples</th><th>Status</th><th>Created</th><th>Review</th></tr></thead><tbody>${state.jobs.map(j=>`<tr><td><b>${j.kind==='collection'?'Source collection':escape(tasks.find(t=>t.key===j.task)?.label||j.task)}</b></td><td>${j.manifest?.accepted_count??j.public_record_count??'—'}</td><td>${badge(j)}</td><td>${date(j.created_at)}</td><td><button data-run="${j.id}">View</button></td></tr>`).join('')||'<tr><td colspan="5">No preparations yet. Open Data preparation to get started.</td></tr>'}</tbody></table></div></section>`;
     host.querySelectorAll('[data-run]').forEach(b=>b.onclick=()=>{const j=state.jobs.find(j=>j.id===b.dataset.run);if(j.kind==='collection')tab='sources';else{active=j.task;selected[active]=j.id;tab='datasets';}navigate();});
   }
   async function refresh() {

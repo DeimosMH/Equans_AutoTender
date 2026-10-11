@@ -52,10 +52,8 @@ body.dark .training { --tr-green:#9cd9bf; --tr-green-bg:#243b31; }
 .tr-mode-tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; padding:0 0 12px; background:none; color:var(--muted); }
 .tr-mode-tabs .selected { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
 .training[data-mode=simple] #tr-page { max-width:950px; }
-.training .tr-question { color:var(--ink); font-size:13px; margin-bottom:12px; }
 .tr-prepare-card { margin-bottom:14px; }
 .tr-prepare-card > h3 { margin:0 0 6px; }
-.tr-prepare-card > p { margin:0; }
 .tr-evidence { border-top:1px solid var(--line); margin-top:20px; padding-top:18px; }
 .tr-evidence b { font-size:15px; font-weight:600; }
 .tr-evidence p { font-size:13px; max-width:600px; margin:6px 0 0; }
@@ -79,7 +77,7 @@ body.dark .training { --tr-green:#9cd9bf; --tr-green-bg:#243b31; }
 .lm-message { color:var(--muted); font-size:12px; margin:0 0 14px; }
 .lm-message.tr-error { color:var(--err); background:none; }
 .lm-menu { gap:22px; }
-.lm-card > h3 { margin:0; }
+.lm-card > h3 { margin:0 0 16px; }
 .lm-card > p { font-size:13px; margin:6px 0 20px; }
 .lm-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:24px; align-items:center; border-top:1px solid var(--line); padding:20px 0; }
 .lm-row label { font-weight:600; font-size:14px; }

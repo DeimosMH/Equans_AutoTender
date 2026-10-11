@@ -505,7 +505,7 @@ function renderTraining() {
   ["emptywrap", "welcome", "saveBtn", "dlwrap", "dlMenu", "renameBtn", "dirtyBadge", "reviewBadge", "finaliseBtn", "lifecycleBadge", "tenderActionMsg"].forEach(id => $(id).classList.add("hidden"));
   $("content").classList.remove("hidden");
   $("tenderTitle").textContent = "LoRA settings";
-  $("sub").textContent = "Choose and update the models for each task";
+  $("sub").textContent = "";
   $("content").innerHTML = '<div id="trainingWorkspace"></div>';
   AutoTenderTraining.mount($("trainingWorkspace"), async (tender, task) => {
     view="tender";updateViewUrl("");

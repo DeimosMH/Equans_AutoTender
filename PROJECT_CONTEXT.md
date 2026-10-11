@@ -15,7 +15,8 @@ submit offers automatically. `materials/README.md` defines the challenge and
 
 The user rejected a previous UI for bloat, inconsistent styling and layout bugs.
 Preserve the existing tender editor, orange/neutral theme, editable table and
-pricing controls. **LoRA settings** has two tabs. **LoRAs** follows the original
+pricing controls. Keep copy to useful labels, status and actionable guidance;
+omit explanatory text that merely repeats the controls. **LoRA settings** has two tabs. **LoRAs** follows the original
 `src/web_ui/todo`: Select LoRAs / Update LoRAs / Base models, each for input
 processing, productivity factors and success probability. Selecting a version
 also chooses its base model; changing a task's base clears an incompatible LoRA.
