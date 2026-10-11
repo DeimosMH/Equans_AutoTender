@@ -1,0 +1,16 @@
+Use case: ads-marketing
+Production method: locally authored, editable SVG with embedded Lato fonts; PNG exported with Chromium. No image-generation API was used.
+Asset type: wide promotional banner for Tendif, 2400 x 1200 pixels.
+Primary request: promote the project's tender-estimation workflow with a minimal, polished design consistent with its existing UI.
+Audience: teams preparing and pricing tenders across industries and project types.
+Scene/backdrop: deep charcoal background with generous negative space and restrained geometric linework.
+Subject: a tender document resolving into a neatly structured, priced offer; abstract document and estimate forms, not an invented application screenshot.
+Style/medium: clean editorial graphic design, precise alignment, crisp typography, subtle depth, professional rather than futuristic.
+Composition: a clear text area balanced against a single document-to-estimate visual; safe margins for reuse in a project cover or social post.
+Color palette: charcoal #1c1f23, warm off-white #f5f5f1, orange #ffad85 and burnt orange #c4420c, matching the Tendif UI.
+Text (verbatim): "Tendif"
+Headline (verbatim): "From tender to offer."
+Supporting line (verbatim): "One workspace. Every tender."
+Typography: legible modern sans-serif, strong hierarchy, brand name and headline dominant; no additional text.
+Constraints: keep the message concise; depict preparing and reviewing an offer, with no promise of automated submission or production-ready AI training.
+Avoid: industry-specific imagery or copy, ventilation diagrams, clutter, tiny UI text, stock-photo people, robots, neon blue, decorative badges, invented metrics, inflated performance claims, third-party logos, watermarks.

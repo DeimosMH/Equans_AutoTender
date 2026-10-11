@@ -7,8 +7,10 @@ UI settings, training files, logs or this document.
 
 ## Product and user decisions
 
-Tendif helps a human estimate ventilation tenders (BKP 244): review
-positions and catalogue matches, calculate material/labour/project cost, compare
+Tendif is intended as a universal workspace for preparing and estimating tenders
+across industries and project types. Ventilation (BKP 244) is the current reference
+dataset, not the product scope. Users review positions and catalogue matches,
+calculate material/labour/project cost, compare
 indicative bid scenarios, and learn from evidence after submission. It does not
 submit offers automatically. `materials/README.md` defines the challenge and
 `materials/expected_output_example.json` defines the reference arithmetic.
