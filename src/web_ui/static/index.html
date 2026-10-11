@@ -560,7 +560,7 @@ function renderMain() {
   $("sub").innerHTML = `${calc.position_results.length} positions · <a class="dl" href="/api/tenders/${current}/download?file=positions" download>${esc(srcName)}</a>`;
   const review = calc.position_results.filter(p => p.review_required).length;
   $("reviewBadge").classList.toggle("hidden", review === 0);
-  $("reviewBadge").textContent = `${review} need review`;
+  $("reviewBadge").textContent = `${review} ${review === 1 ? 'position needs' : 'positions need'} review`;
   $("content").classList.remove("hidden");
   $("dlwrap").classList.remove("hidden");
   $("saveBtn").classList.toggle("hidden", tenderFinished());
